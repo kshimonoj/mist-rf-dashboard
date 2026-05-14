@@ -47,6 +47,7 @@ Visualize AP metrics, radio configurations, and configuration hierarchy across a
    MIST_BASE_URL=https://api.mist.com/api/v1
    POLLING_INTERVAL_SECONDS=300
    TIMEZONE=Asia/Tokyo
+   API_URL=http://localhost:8008
    ```
 
    > **Note**: Adjust `MIST_BASE_URL` for your region:
@@ -54,6 +55,10 @@ Visualize AP metrics, radio configurations, and configuration hierarchy across a
    > - EU: `https://api.eu.mist.com/api/v1`
    > - APAC (AC2): `https://api.ac2.mist.com/api/v1`
    > - APAC (AC5): `https://api.ac5.mist.com/api/v1`
+
+   > **Note**: `API_URL` is the backend URL as seen from the browser:
+   > - Local Mac: `http://localhost:8008`
+   > - Remote server: `http://<SERVER_IP>:8008`
 
 4. Start the application:
    ```bash

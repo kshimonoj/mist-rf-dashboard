@@ -14,11 +14,14 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        - NEXT_PUBLIC_API_URL=${API_URL:-http://localhost:8008}
     ports:
       - "3007:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8008
+      - NEXT_PUBLIC_API_URL=${API_URL:-http://localhost:8008}
     depends_on:
       - backend
     restart: unless-stopped
