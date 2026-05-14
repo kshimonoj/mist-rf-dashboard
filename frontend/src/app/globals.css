@@ -1,0 +1,83 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Dark theme (default) ── */
+:root {
+  --bg-primary: #0a0e1a;
+  --bg-card: #0d1220;
+  --bg-hover: #111827;
+  --text-primary: #e2e8f0;
+  --text-muted: #64748b;
+  --text-secondary: #94a3b8;
+  --border-cyan: rgba(0, 212, 255, 0.2);
+  --border-cyan-hover: rgba(0, 212, 255, 0.6);
+  --grid-line: rgba(0, 212, 255, 0.03);
+  --chart-grid: #1e293b;
+  --cyan: #00d4ff;
+  --purple: #7c3aed;
+  --green: #00ff88;
+  --red: #ff4444;
+  --orange: #ff8c00;
+  --yellow: #ffd700;
+}
+
+/* ── Light theme ── */
+[data-theme="light"] {
+  --bg-primary: #f1f5f9;
+  --bg-card: #ffffff;
+  --bg-hover: #e8eef5;
+  --text-primary: #0f172a;
+  --text-muted: #64748b;
+  --text-secondary: #475569;
+  --border-cyan: rgba(2, 132, 199, 0.25);
+  --border-cyan-hover: rgba(2, 132, 199, 0.7);
+  --grid-line: rgba(2, 132, 199, 0.06);
+  --chart-grid: #e2e8f0;
+  --cyan: #0284c7;
+  --purple: #7c3aed;
+  --green: #16a34a;
+  --red: #dc2626;
+  --orange: #ea580c;
+  --yellow: #ca8a04;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.5); }
+}
+
+.pulse-green {
+  animation: pulse-dot 2s ease-in-out infinite;
+  background-color: var(--green);
+}
+
+.pulse-red {
+  animation: pulse-dot 2s ease-in-out infinite;
+  background-color: var(--red);
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(0, 212, 255, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(0, 212, 255, 0.6); }
+}
+
+.glow-cyan {
+  animation: glow 3s ease-in-out infinite;
+}

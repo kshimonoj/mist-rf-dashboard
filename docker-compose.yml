@@ -1,0 +1,24 @@
+version: '3.9'
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8008:8000"
+    environment:
+      - MIST_API_TOKEN=${MIST_API_TOKEN}
+      - MIST_ORG_ID=${MIST_ORG_ID}
+      - MIST_BASE_URL=${MIST_BASE_URL}
+      - POLLING_INTERVAL_SECONDS=${POLLING_INTERVAL_SECONDS:-300}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3007:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8008
+    depends_on:
+      - backend
+    restart: unless-stopped
