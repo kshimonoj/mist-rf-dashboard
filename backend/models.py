@@ -10,6 +10,7 @@ class ApMetrics(Base):
     site_id = Column(String, index=True)
     ap_id = Column(String, index=True)
     ap_name = Column(String)
+    model = Column(String, nullable=True)
     mac = Column(String)
     timestamp = Column(DateTime, default=func.now(), index=True)
     num_clients = Column(Integer, default=0)

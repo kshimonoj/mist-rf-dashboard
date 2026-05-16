@@ -1,16 +1,24 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import useSWR from "swr";
 import {
   fetchFloorMapSites,
   fetchFloorMaps,
   fetchFloorAps,
+  fetchSnapshotFloorMapSites,
+  fetchSnapshotFloorMapMaps,
+  fetchSnapshotFloorAps,
   getFloorMapImageUrl,
   FloorMapInfo,
   FloorAp,
+  FloorMapSaveRow,
   SiteSimple,
 } from "@/lib/api";
+
+export interface FloorMapTabHandle {
+  getRows: () => FloorMapSaveRow[] | null;
+}
 
 // ── Color utilities ────────────────────────────────────────────────────────────
 
@@ -267,27 +275,79 @@ function InterferenceTable({ aps }: { aps: FloorAp[] }) {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function FloorMapTab() {
+interface FloorMapTabProps {
+  snapshotSlot?: number;
+}
+
+const FloorMapTab = forwardRef<FloorMapTabHandle, FloorMapTabProps>(
+function FloorMapTab({ snapshotSlot } = {}, ref) {
   const [selectedSiteId, setSelectedSiteId] = useState("");
   const [selectedMapId, setSelectedMapId] = useState("");
   const [activeBandKey, setActiveBandKey] = useState<BandKey>("radio_5");
   const [imgError, setImgError] = useState(false);
   const prevSiteId = useRef("");
 
+  const isSnapshot = snapshotSlot != null;
+  const prefix = isSnapshot ? `snap${snapshotSlot}` : "live";
+
   const { data: sites } = useSWR<SiteSimple[]>(
-    "floor-map-sites",
-    fetchFloorMapSites
+    `${prefix}-floor-map-sites`,
+    isSnapshot
+      ? () => fetchSnapshotFloorMapSites(snapshotSlot!)
+      : fetchFloorMapSites
   );
 
   const { data: maps } = useSWR<FloorMapInfo[]>(
-    selectedSiteId ? `floor-map-maps-${selectedSiteId}` : null,
-    () => fetchFloorMaps(selectedSiteId)
+    selectedSiteId ? `${prefix}-floor-map-maps-${selectedSiteId}` : null,
+    isSnapshot
+      ? () => fetchSnapshotFloorMapMaps(snapshotSlot!, selectedSiteId)
+      : () => fetchFloorMaps(selectedSiteId)
   );
 
   const { data: aps, isLoading: apsLoading } = useSWR<FloorAp[]>(
-    selectedSiteId ? `floor-map-aps-${selectedSiteId}` : null,
-    () => fetchFloorAps(selectedSiteId)
+    selectedSiteId ? `${prefix}-floor-map-aps-${selectedSiteId}` : null,
+    isSnapshot
+      ? () => fetchSnapshotFloorAps(snapshotSlot!, selectedSiteId)
+      : () => fetchFloorAps(selectedSiteId)
   );
+
+  // Expose getRows() to parent via ref (live mode only)
+  useImperativeHandle(ref, () => ({
+    getRows: (): FloorMapSaveRow[] | null => {
+      if (isSnapshot || !aps || aps.length === 0 || !selectedSiteId) return null;
+      const siteName = sites?.find((s) => s.id === selectedSiteId)?.name ?? "";
+      const mapIndex = new Map((maps ?? []).map((m) => [m.id, m]));
+      return aps.map((ap) => {
+        const mapInfo = ap.map_id ? mapIndex.get(ap.map_id) : undefined;
+        const ppm = mapInfo?.ppm ?? null;
+        return {
+          site_id: selectedSiteId,
+          site_name: siteName,
+          map_id: ap.map_id ?? null,
+          map_name: mapInfo?.name ?? "",
+          ap_name: ap.name,
+          mac: ap.mac ?? "",
+          model: ap.model,
+          status: ap.status,
+          band_24_channel: ap.radio_24.channel,
+          band_24_bandwidth: ap.radio_24.bandwidth,
+          band_24_power: ap.radio_24.tx_power,
+          band_24_noise_floor: ap.radio_24.noise_floor,
+          band_5_channel: ap.radio_5.channel,
+          band_5_bandwidth: ap.radio_5.bandwidth,
+          band_5_power: ap.radio_5.tx_power,
+          band_5_noise_floor: ap.radio_5.noise_floor,
+          band_6_channel: ap.radio_6.channel,
+          band_6_bandwidth: ap.radio_6.bandwidth,
+          band_6_power: ap.radio_6.tx_power,
+          band_6_noise_floor: ap.radio_6.noise_floor,
+          num_clients: ap.num_clients,
+          x_m: ap.x != null && ppm ? Math.round((ap.x / ppm) * 100) / 100 : null,
+          y_m: ap.y != null && ppm ? Math.round((ap.y / ppm) * 100) / 100 : null,
+        };
+      });
+    },
+  }), [isSnapshot, aps, selectedSiteId, sites, maps]);
 
   // Auto-select first site
   useEffect(() => {
@@ -520,4 +580,7 @@ export default function FloorMapTab() {
       {mapAps.length > 0 && <InterferenceTable aps={mapAps} />}
     </div>
   );
-}
+});
+
+FloorMapTab.displayName = "FloorMapTab";
+export default FloorMapTab;

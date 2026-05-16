@@ -231,6 +231,15 @@ export const fetchSnapshotRadioConfig = (slot: number, apId: string) =>
 export const getSnapshotDbDownloadUrl = (slot: number, tz = "Asia/Tokyo") =>
   `${API_BASE}/api/snapshot-db/${slot}/download?tz=${encodeURIComponent(tz)}`;
 
+export const fetchSnapshotFloorMapSites = (slot: number) =>
+  apiFetch<SiteSimple[]>(`/api/snapshot-db/${slot}/floor-map/sites`);
+
+export const fetchSnapshotFloorMapMaps = (slot: number, siteId: string) =>
+  apiFetch<FloorMapInfo[]>(`/api/snapshot-db/${slot}/floor-map/sites/${siteId}/maps`);
+
+export const fetchSnapshotFloorAps = (slot: number, siteId: string) =>
+  apiFetch<FloorAp[]>(`/api/snapshot-db/${slot}/floor-map/sites/${siteId}/aps`);
+
 export async function uploadSnapshotDb(file: File, slot?: number): Promise<SnapshotDbMeta> {
   const fd = new FormData();
   fd.append("file", file);
@@ -251,6 +260,7 @@ export interface FloorMapInfo {
   name: string;
   width: number | null;
   height: number | null;
+  ppm?: number | null;
 }
 
 export interface FloorRadioBand {
@@ -263,6 +273,7 @@ export interface FloorRadioBand {
 export interface FloorAp {
   id: string;
   name: string;
+  mac: string;
   model: string;
   status: string;
   map_id: string | null;
@@ -274,7 +285,45 @@ export interface FloorAp {
   radio_6: FloorRadioBand;
 }
 
+export interface FloorMapSaveRow {
+  site_id: string;
+  site_name: string;
+  map_id: string | null;
+  map_name: string;
+  ap_name: string;
+  mac: string;
+  model: string;
+  status: string;
+  band_24_channel: number | null;
+  band_24_bandwidth: number | null;
+  band_24_power: number | null;
+  band_24_noise_floor: number | null;
+  band_5_channel: number | null;
+  band_5_bandwidth: number | null;
+  band_5_power: number | null;
+  band_5_noise_floor: number | null;
+  band_6_channel: number | null;
+  band_6_bandwidth: number | null;
+  band_6_power: number | null;
+  band_6_noise_floor: number | null;
+  num_clients: number;
+  x_m: number | null;
+  y_m: number | null;
+}
+
 export const fetchFloorMapSites = () => apiFetch<SiteSimple[]>("/api/floor-map/sites");
+
+export async function saveFloorMapLog(
+  rows: FloorMapSaveRow[]
+): Promise<{ filename: string | null; record_count: number }> {
+  const res = await fetch(`${API_BASE}/api/logs/floormap/save`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) throw new Error(`FloorMap save error ${res.status}`);
+  return res.json();
+}
 export const fetchFloorMaps = (siteId: string) =>
   apiFetch<FloorMapInfo[]>(`/api/floor-map/sites/${siteId}/maps`);
 export const fetchFloorAps = (siteId: string) =>

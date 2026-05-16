@@ -1,13 +1,13 @@
 "use client";
 
-import { ArrowLeft, Download, Home, RefreshCw, Trash2, FileDown, Camera, Eye } from "lucide-react";
+import { ArrowLeft, Download, Home, RefreshCw, Trash2, FileDown, Camera, Eye, Map } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import {
-  fetchSnapshots, fetchSites, fetchSiteAps, fetchSnapshotDbs,
-  getSnapshotDownloadUrl, getSnapshotDbDownloadUrl, getLogsZipUrl, deleteLogs,
-  SnapshotInfo, SiteInfo, ApInfo, SnapshotDbMeta,
+  fetchSnapshots, fetchLogs, fetchSites, fetchSiteAps, fetchSnapshotDbs,
+  getSnapshotDownloadUrl, getSnapshotDbDownloadUrl, getLogDownloadUrl, getLogsZipUrl, deleteLogs,
+  SnapshotInfo, LogFileInfo, SiteInfo, ApInfo, SnapshotDbMeta,
 } from "@/lib/api";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import SaveNowButton from "@/app/components/SaveNowButton";
@@ -15,7 +15,19 @@ import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 
 type TriggerFilter = "all" | "manual" | "auto";
+type TypeFilter = "all" | "ap_metrics" | "floormap";
+type FileType = "ap_metrics" | "floormap";
 type Tab = "snapshots" | "csv-logs";
+
+interface UnifiedLogRow {
+  filename: string;
+  fileType: FileType;
+  savedAt: string;
+  triggeredBy: string;
+  siteCount: number | null;
+  apCount: number | null;
+  sizeBytes: number;
+}
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -35,6 +47,23 @@ function TriggerBadge({ trigger }: { trigger: string }) {
       }
     >
       {isManual ? "manual" : "auto"}
+    </span>
+  );
+}
+
+function TypeBadge({ fileType }: { fileType: FileType }) {
+  const isFloor = fileType === "floormap";
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-mono"
+      style={
+        isFloor
+          ? { borderColor: "var(--purple)", color: "var(--purple)", backgroundColor: "rgba(124,58,237,0.08)" }
+          : { borderColor: "var(--text-muted)", color: "var(--text-muted)", backgroundColor: "transparent" }
+      }
+    >
+      {isFloor && <Map className="w-3 h-3" />}
+      {isFloor ? "Floor Map" : "AP Metrics"}
     </span>
   );
 }
@@ -135,28 +164,59 @@ function CsvLogsTab() {
   const [selectedSiteId, setSelectedSiteId] = useState<string>("");
   const [selectedApId, setSelectedApId] = useState<string>("");
   const [triggerFilter, setTriggerFilter] = useState<TriggerFilter>("all");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
 
-  const { data: snapshots, isLoading, mutate } = useSWR<SnapshotInfo[]>("snapshots", fetchSnapshots);
+  // fetchLogs: ファイルシステムから全CSV（ap_metrics + floormap）を取得
+  const { data: logData, isLoading, mutate } = useSWR("log-files", fetchLogs);
+  // fetchSnapshots: ap_metrics のメタデータ（site_count, ap_count, triggered_by）を補完
+  const { data: snapshots } = useSWR<SnapshotInfo[]>("snapshots", fetchSnapshots);
   const { data: sites } = useSWR<SiteInfo[]>("sites", fetchSites);
   const { data: aps } = useSWR<ApInfo[]>(
     selectedSiteId ? `site-aps-${selectedSiteId}` : null,
     () => fetchSiteAps(selectedSiteId),
   );
 
-  const filtered = snapshots?.filter((s) =>
-    triggerFilter === "all" || s.triggered_by === triggerFilter
-  ) ?? [];
+  // ap_metrics のメタデータをファイル名でインデックス化
+  const snapIndex = useMemo(() => {
+    const m: Record<string, SnapshotInfo> = {};
+    (snapshots ?? []).forEach((s) => { m[s.filename] = s; });
+    return m;
+  }, [snapshots]);
 
-  const hasFilter = selectedSiteId || selectedApId || triggerFilter !== "all";
-  const totalBytes = snapshots?.reduce((acc, s) => acc + s.size_bytes, 0) ?? 0;
-  const allSelected = filtered.length > 0 && filtered.every((s) => selected.has(s.filename));
+  // ファイル一覧をUnifiedLogRowに統合（降順ソート）
+  const allRows = useMemo((): UnifiedLogRow[] => {
+    return (logData?.files ?? []).map((f: LogFileInfo) => {
+      const snap = snapIndex[f.filename];
+      const isFloormap = f.filename.startsWith("floormap_");
+      const isManual = f.filename.includes("_manual");
+      return {
+        filename: f.filename,
+        fileType: (isFloormap ? "floormap" : "ap_metrics") as FileType,
+        savedAt: snap?.saved_at ?? f.created_at,
+        triggeredBy: snap?.triggered_by ?? (isManual ? "manual" : "auto"),
+        siteCount: snap?.site_count ?? null,
+        apCount: snap?.ap_count ?? null,
+        sizeBytes: f.size_bytes,
+      };
+    }).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  }, [logData, snapIndex]);
+
+  const filtered = allRows.filter((row) => {
+    if (typeFilter !== "all" && row.fileType !== typeFilter) return false;
+    if (triggerFilter !== "all" && row.triggeredBy !== triggerFilter) return false;
+    return true;
+  });
+
+  const hasFilter = selectedSiteId || selectedApId || triggerFilter !== "all" || typeFilter !== "all";
+  const totalBytes = logData?.total_bytes ?? 0;
+  const allSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.filename));
   const someSelected = selected.size > 0;
 
   const toggleAll = () => {
     if (allSelected) setSelected(new Set());
-    else setSelected(new Set(filtered.map((s) => s.filename)));
+    else setSelected(new Set(filtered.map((r) => r.filename)));
   };
 
   const toggleOne = (filename: string) => {
@@ -195,6 +255,19 @@ function CsvLogsTab() {
       <div className="border rounded-lg p-4 mb-4 flex flex-wrap gap-4 items-end"
         style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}>
         <div>
+          <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Type</label>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+            className="text-sm font-mono px-3 py-1.5 rounded border bg-transparent"
+            style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
+          >
+            <option value="all">All</option>
+            <option value="ap_metrics">AP Metrics</option>
+            <option value="floormap">Floor Map</option>
+          </select>
+        </div>
+        <div>
           <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Trigger</label>
           <select
             value={triggerFilter}
@@ -207,38 +280,42 @@ function CsvLogsTab() {
             <option value="auto">Auto</option>
           </select>
         </div>
-        <div>
-          <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Site Filter</label>
-          <select
-            value={selectedSiteId}
-            onChange={(e) => { setSelectedSiteId(e.target.value); setSelectedApId(""); }}
-            className="text-sm font-mono px-3 py-1.5 rounded border bg-transparent"
-            style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
-          >
-            <option value="">All Sites</option>
-            {sites?.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>AP Filter</label>
-          <select
-            value={selectedApId}
-            onChange={(e) => setSelectedApId(e.target.value)}
-            disabled={!selectedSiteId}
-            className="text-sm font-mono px-3 py-1.5 rounded border bg-transparent disabled:opacity-40"
-            style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
-          >
-            <option value="">All APs</option>
-            {aps?.map((ap) => (
-              <option key={ap.id} value={ap.id}>{ap.name || ap.mac}</option>
-            ))}
-          </select>
-        </div>
+        {typeFilter !== "floormap" && (
+          <>
+            <div>
+              <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Site Filter</label>
+              <select
+                value={selectedSiteId}
+                onChange={(e) => { setSelectedSiteId(e.target.value); setSelectedApId(""); }}
+                className="text-sm font-mono px-3 py-1.5 rounded border bg-transparent"
+                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
+              >
+                <option value="">All Sites</option>
+                {sites?.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>AP Filter</label>
+              <select
+                value={selectedApId}
+                onChange={(e) => setSelectedApId(e.target.value)}
+                disabled={!selectedSiteId}
+                className="text-sm font-mono px-3 py-1.5 rounded border bg-transparent disabled:opacity-40"
+                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
+              >
+                <option value="">All APs</option>
+                {aps?.map((ap) => (
+                  <option key={ap.id} value={ap.id}>{ap.name || ap.mac}</option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
         {hasFilter && (
           <button
-            onClick={() => { setSelectedSiteId(""); setSelectedApId(""); setTriggerFilter("all"); }}
+            onClick={() => { setSelectedSiteId(""); setSelectedApId(""); setTriggerFilter("all"); setTypeFilter("all"); }}
             className="text-xs px-3 py-1.5 border rounded"
             style={{ borderColor: "var(--chart-grid)", color: "var(--text-muted)" }}
           >
@@ -283,7 +360,7 @@ function CsvLogsTab() {
 
       {!isLoading && filtered.length === 0 && (
         <p className="text-center py-20 text-sm" style={{ color: "var(--text-muted)" }}>
-          {snapshots?.length === 0
+          {allRows.length === 0
             ? "CSVログがありません。「Save Now」で保存してください。"
             : "該当するログがありません。"}
         </p>
@@ -302,7 +379,7 @@ function CsvLogsTab() {
                     className="w-4 h-4 cursor-pointer accent-cyan-400"
                   />
                 </th>
-                {["Saved At", "Trigger", "Sites", "Records", "Size", ""].map((h) => (
+                {["Saved At", "Type", "Trigger", "Sites", "Records", "Size", ""].map((h) => (
                   <th key={h} className="text-left py-3 px-3 font-normal whitespace-nowrap"
                     style={{ color: "var(--text-muted)" }}>
                     {h}
@@ -311,9 +388,9 @@ function CsvLogsTab() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((snap) => (
+              {filtered.map((row) => (
                 <tr
-                  key={snap.id}
+                  key={row.filename}
                   className="border-b transition-colors"
                   style={{ borderColor: "var(--chart-grid)" }}
                   onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--bg-hover)")}
@@ -322,36 +399,53 @@ function CsvLogsTab() {
                   <td className="py-3 px-3">
                     <input
                       type="checkbox"
-                      checked={selected.has(snap.filename)}
-                      onChange={() => toggleOne(snap.filename)}
+                      checked={selected.has(row.filename)}
+                      onChange={() => toggleOne(row.filename)}
                       className="w-4 h-4 cursor-pointer accent-cyan-400"
                     />
                   </td>
                   <td className="py-3 px-3 whitespace-nowrap" style={{ color: "var(--text-primary)" }}>
-                    {toLocalString(snap.saved_at, timezone)}
+                    {toLocalString(row.savedAt, timezone)}
                   </td>
-                  <td className="py-3 px-3"><TriggerBadge trigger={snap.triggered_by} /></td>
-                  <td className="py-3 px-3" style={{ color: "var(--text-secondary)" }}>{snap.site_count}</td>
+                  <td className="py-3 px-3"><TypeBadge fileType={row.fileType} /></td>
+                  <td className="py-3 px-3"><TriggerBadge trigger={row.triggeredBy} /></td>
                   <td className="py-3 px-3" style={{ color: "var(--text-secondary)" }}>
-                    {snap.ap_count.toLocaleString()} records
+                    {row.siteCount ?? <span style={{ color: "var(--text-muted)" }}>—</span>}
                   </td>
                   <td className="py-3 px-3" style={{ color: "var(--text-secondary)" }}>
-                    {formatSize(snap.size_bytes)}
+                    {row.apCount != null
+                      ? `${row.apCount.toLocaleString()} records`
+                      : <span style={{ color: "var(--text-muted)" }}>—</span>}
+                  </td>
+                  <td className="py-3 px-3" style={{ color: "var(--text-secondary)" }}>
+                    {formatSize(row.sizeBytes)}
                   </td>
                   <td className="py-3 px-3">
-                    <a
-                      href={getSnapshotDownloadUrl(
-                        snap.filename,
-                        selectedSiteId || undefined,
-                        selectedApId || undefined,
-                      )}
-                      download
-                      className="flex items-center gap-1 px-2 py-1 rounded border text-xs transition-all whitespace-nowrap"
-                      style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
-                    >
-                      <Download className="w-3 h-3" />
-                      {selectedSiteId || selectedApId ? "Filtered DL" : "Download"}
-                    </a>
+                    {row.fileType === "ap_metrics" ? (
+                      <a
+                        href={getSnapshotDownloadUrl(
+                          row.filename,
+                          selectedSiteId || undefined,
+                          selectedApId || undefined,
+                        )}
+                        download
+                        className="flex items-center gap-1 px-2 py-1 rounded border text-xs transition-all whitespace-nowrap"
+                        style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
+                      >
+                        <Download className="w-3 h-3" />
+                        {selectedSiteId || selectedApId ? "Filtered DL" : "Download"}
+                      </a>
+                    ) : (
+                      <a
+                        href={getLogDownloadUrl(row.filename)}
+                        download
+                        className="flex items-center gap-1 px-2 py-1 rounded border text-xs transition-all whitespace-nowrap"
+                        style={{ borderColor: "var(--purple)", color: "var(--purple)" }}
+                      >
+                        <Download className="w-3 h-3" />
+                        Download
+                      </a>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -364,7 +458,7 @@ function CsvLogsTab() {
 }
 
 export default function HistoryPage() {
-  const [tab, setTab] = useState<Tab>("snapshots");
+  const [tab, setTab] = useState<Tab>("csv-logs");
   const { data: snapshots, isLoading, mutate } = useSWR<SnapshotInfo[]>("snapshots", fetchSnapshots);
 
   return (

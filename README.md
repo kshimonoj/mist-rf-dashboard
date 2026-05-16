@@ -22,6 +22,12 @@ Visualize AP metrics, radio configurations, and configuration hierarchy across a
 - **Snapshot**: Save and replay 72-hour metric snapshots
   - Download/upload snapshot files (.db) for offline review
 - **CSV Export**: Automatic hourly log export with manual save option
+  ### CSV Logs
+  - **AP Metrics**: channel, power, noise floor, utilization per radio band + model
+  - **Floor Map Summary**: per-floor co-channel interference summary
+    (band / channel / AP count / AP list / interference flag)
+  - Auto-save on interval, manual save via "Save Now"
+  - History page: CSV Logs tab shown first, sorted by timestamp descending
 - **Dark/Light Mode**: Toggle via UI
 - **Timezone Support**: Configurable timezone for all timestamps
 - **Polling Control**: Adjustable polling interval via UI (no restart required)

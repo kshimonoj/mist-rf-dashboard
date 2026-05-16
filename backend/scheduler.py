@@ -39,8 +39,13 @@ def _persist_last_log_saved_at(dt: datetime) -> None:
 LOGS_DIR = "/app/data/logs"
 _MAX_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB
 
+FLOORMAP_SUMMARY_CSV_COLUMNS = [
+    "timestamp", "site_name", "map_name", "band", "channel",
+    "ap_count", "ap_list", "has_interference",
+]
+
 ALL_CSV_COLUMNS = [
-    "timestamp", "site_id", "site_name", "ap_id", "ap_name", "mac", "status",
+    "timestamp", "site_id", "site_name", "ap_id", "ap_name", "model", "mac", "status",
     "num_clients",
     "radio_24_channel", "radio_24_bandwidth", "radio_24_tx_power",
     "radio_24_utilization", "radio_24_util_tx", "radio_24_util_rx_in_bss", "radio_24_util_non_wifi",
@@ -240,6 +245,7 @@ async def poll_all_sites():
                 for device in devices:
                     ap_id = device.get("id", "")
                     ap_name = device.get("name", "")
+                    model = device.get("model", "")
                     mac = device.get("mac", "")
                     status = device.get("status", "connected")
                     num_clients = device.get("num_clients", 0) or 0
@@ -249,7 +255,7 @@ async def poll_all_sites():
                     r6 = _extract_radio_stats(device, "band_6")
 
                     db.add(ApMetrics(
-                        site_id=site_id, ap_id=ap_id, ap_name=ap_name, mac=mac,
+                        site_id=site_id, ap_id=ap_id, ap_name=ap_name, model=model, mac=mac,
                         timestamp=now, num_clients=num_clients, status=status,
                         radio_24_channel=r24["channel"],
                         radio_24_bandwidth=r24["bandwidth"],
@@ -349,6 +355,93 @@ async def poll_all_sites():
     logger.info("Polling complete.")
 
 
+async def save_floormap_log(
+    now: datetime,
+    tz_obj,
+    tz_abbr: str,
+    filename_suffix: str = "",
+) -> str | None:
+    """全サイト・全フロアのチャンネル使用状況を要約CSVに書き出す（Mist API からリアルタイム取得）。"""
+    client = MistClient()
+    org_id = os.getenv("MIST_ORG_ID", "")
+    sites = await client.get_sites(org_id)
+    if not sites:
+        logger.info("[FLOORMAP SAVE] No sites.")
+        return None
+    if _monitored_site_ids:
+        sites = [s for s in sites if s.get("id") in _monitored_site_ids]
+
+    now_local = now.astimezone(tz_obj)
+    ts_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+    sem = asyncio.Semaphore(5)
+
+    async def _fetch_site(site: dict) -> list[dict]:
+        async with sem:
+            site_id = site.get("id", "")
+            site_name = site.get("name", "")
+            maps_raw, devices = await asyncio.gather(
+                client._get(f"/sites/{site_id}/maps"),
+                client.get_site_devices_stats(site_id),
+            )
+            if not isinstance(maps_raw, list):
+                maps_raw = []
+            map_meta = {m.get("id", ""): m.get("name", "") for m in maps_raw}
+
+            # (site_name, map_name, band, channel) -> [ap_name, ...]
+            groups: dict[tuple, list[str]] = {}
+            for d in devices:
+                map_id = d.get("map_id") or ""
+                map_name = map_meta.get(map_id, "")
+                ap_name = d.get("name", "")
+                rs = d.get("radio_stat", {}) or {}
+                for band, ch in [
+                    ("2.4G", (rs.get("band_24", {}) or {}).get("channel")),
+                    ("5G",   (rs.get("band_5",  {}) or {}).get("channel")),
+                    ("6G",   (rs.get("band_6",  {}) or {}).get("channel")),
+                ]:
+                    if ch is None:
+                        continue
+                    key = (site_name, map_name, band, ch)
+                    groups.setdefault(key, []).append(ap_name)
+
+            result = []
+            for (sname, mname, band, channel), ap_names in groups.items():
+                ap_count = len(ap_names)
+                result.append({
+                    "timestamp": ts_str,
+                    "site_name": sname,
+                    "map_name": mname,
+                    "band": band,
+                    "channel": channel,
+                    "ap_count": ap_count,
+                    "ap_list": ",".join(ap_names),
+                    "has_interference": ap_count >= 2,
+                })
+            return result
+
+    site_results = await asyncio.gather(*[_fetch_site(s) for s in sites])
+    rows = [r for rs in site_results for r in rs]
+
+    if not rows:
+        logger.info("[FLOORMAP SAVE] No AP data, skipping.")
+        return None
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    if filename_suffix:
+        filename = f"floormap_{now_local.strftime('%Y%m%d_%H%M%S')}_{tz_abbr}_{filename_suffix}_summary.csv"
+    else:
+        filename = f"floormap_{now_local.strftime('%Y%m%d_%H%M')}_{tz_abbr}_summary.csv"
+    filepath = os.path.join(LOGS_DIR, filename)
+
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=FLOORMAP_SUMMARY_CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    logger.info(f"[FLOORMAP SAVE] Saved: {filepath} ({len(rows)} records)")
+    return filename
+
+
 async def save_hourly_logs():
     """前回保存以降の ap_metrics 全件を CSV に書き出す（期間ログ方式）。"""
     global last_log_saved_at
@@ -373,72 +466,76 @@ async def save_hourly_logs():
             .all()
         )
         if not rows:
-            logger.info("[AUTO SAVE] No new metrics since last save, skipping.")
-            last_log_saved_at = now
-            _persist_last_log_saved_at(now)
-            return
+            logger.info("[AUTO SAVE] No new metrics since last save, skipping CSV write.")
+        else:
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            filename = f"ap_metrics_{now_local.strftime('%Y%m%d_%H%M')}_{tz_abbr}.csv"
+            filepath = os.path.join(LOGS_DIR, filename)
 
-        os.makedirs(LOGS_DIR, exist_ok=True)
-        filename = f"ap_metrics_{now_local.strftime('%Y%m%d_%H%M')}_{tz_abbr}.csv"
-        filepath = os.path.join(LOGS_DIR, filename)
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=ALL_CSV_COLUMNS, extrasaction="ignore")
+                writer.writeheader()
+                for r in rows:
+                    writer.writerow({
+                        "timestamp": fmt_dt_tz(r.timestamp, _app_timezone),
+                        "site_id": r.site_id,
+                        "site_name": site_names.get(r.site_id, ""),
+                        "ap_id": r.ap_id,
+                        "ap_name": r.ap_name,
+                        "model": r.model or "",
+                        "mac": r.mac,
+                        "status": r.status,
+                        "num_clients": r.num_clients,
+                        "radio_24_channel": r.radio_24_channel,
+                        "radio_24_bandwidth": r.radio_24_bandwidth,
+                        "radio_24_tx_power": r.radio_24_tx_power,
+                        "radio_24_utilization": r.radio_24_utilization,
+                        "radio_24_util_tx": r.radio_24_util_tx,
+                        "radio_24_util_rx_in_bss": r.radio_24_util_rx_in_bss,
+                        "radio_24_util_non_wifi": r.radio_24_util_non_wifi,
+                        "radio_24_noise_floor": r.radio_24_noise_floor,
+                        "radio_5_channel": r.radio_5_channel,
+                        "radio_5_bandwidth": r.radio_5_bandwidth,
+                        "radio_5_tx_power": r.radio_5_tx_power,
+                        "radio_5_utilization": r.radio_5_utilization,
+                        "radio_5_util_tx": r.radio_5_util_tx,
+                        "radio_5_util_rx_in_bss": r.radio_5_util_rx_in_bss,
+                        "radio_5_util_non_wifi": r.radio_5_util_non_wifi,
+                        "radio_5_noise_floor": r.radio_5_noise_floor,
+                        "radio_6_channel": r.radio_6_channel,
+                        "radio_6_bandwidth": r.radio_6_bandwidth,
+                        "radio_6_tx_power": r.radio_6_tx_power,
+                        "radio_6_utilization": r.radio_6_utilization,
+                        "radio_6_util_tx": r.radio_6_util_tx,
+                        "radio_6_util_rx_in_bss": r.radio_6_util_rx_in_bss,
+                        "radio_6_util_non_wifi": r.radio_6_util_non_wifi,
+                        "radio_6_noise_floor": r.radio_6_noise_floor,
+                    })
 
-        with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=ALL_CSV_COLUMNS, extrasaction="ignore")
-            writer.writeheader()
-            for r in rows:
-                writer.writerow({
-                    "timestamp": fmt_dt_tz(r.timestamp, _app_timezone),
-                    "site_id": r.site_id,
-                    "site_name": site_names.get(r.site_id, ""),
-                    "ap_id": r.ap_id,
-                    "ap_name": r.ap_name,
-                    "mac": r.mac,
-                    "status": r.status,
-                    "num_clients": r.num_clients,
-                    "radio_24_channel": r.radio_24_channel,
-                    "radio_24_bandwidth": r.radio_24_bandwidth,
-                    "radio_24_tx_power": r.radio_24_tx_power,
-                    "radio_24_utilization": r.radio_24_utilization,
-                    "radio_24_util_tx": r.radio_24_util_tx,
-                    "radio_24_util_rx_in_bss": r.radio_24_util_rx_in_bss,
-                    "radio_24_util_non_wifi": r.radio_24_util_non_wifi,
-                    "radio_24_noise_floor": r.radio_24_noise_floor,
-                    "radio_5_channel": r.radio_5_channel,
-                    "radio_5_bandwidth": r.radio_5_bandwidth,
-                    "radio_5_tx_power": r.radio_5_tx_power,
-                    "radio_5_utilization": r.radio_5_utilization,
-                    "radio_5_util_tx": r.radio_5_util_tx,
-                    "radio_5_util_rx_in_bss": r.radio_5_util_rx_in_bss,
-                    "radio_5_util_non_wifi": r.radio_5_util_non_wifi,
-                    "radio_5_noise_floor": r.radio_5_noise_floor,
-                    "radio_6_channel": r.radio_6_channel,
-                    "radio_6_bandwidth": r.radio_6_bandwidth,
-                    "radio_6_tx_power": r.radio_6_tx_power,
-                    "radio_6_utilization": r.radio_6_utilization,
-                    "radio_6_util_tx": r.radio_6_util_tx,
-                    "radio_6_util_rx_in_bss": r.radio_6_util_rx_in_bss,
-                    "radio_6_util_non_wifi": r.radio_6_util_non_wifi,
-                    "radio_6_noise_floor": r.radio_6_noise_floor,
-                })
+            site_count = len({r.site_id for r in rows})
+            record_count = len(rows)
 
-        site_count = len({r.site_id for r in rows})
-        record_count = len(rows)
+            existing = db.query(Snapshot).filter_by(filename=filename).first()
+            if not existing:
+                db.add(Snapshot(
+                    filename=filename, saved_at=now, triggered_by="auto",
+                    site_count=site_count, ap_count=record_count,
+                ))
+                db.commit()
 
-        existing = db.query(Snapshot).filter_by(filename=filename).first()
-        if not existing:
-            db.add(Snapshot(
-                filename=filename, saved_at=now, triggered_by="auto",
-                site_count=site_count, ap_count=record_count,
-            ))
-            db.commit()
+            logger.info(f"[AUTO SAVE] Saved: {filepath} ({record_count} records, {site_count} sites)")
 
         last_log_saved_at = now
         _persist_last_log_saved_at(now)
-        logger.info(f"[AUTO SAVE] Saved: {filepath} ({record_count} records, {site_count} sites)")
     except Exception as e:
         logger.error(f"[AUTO SAVE] Failed: {e}")
         db.rollback()
     finally:
         db.close()
+
+    try:
+        await save_floormap_log(now, tz_obj, tz_abbr)
+    except Exception as e:
+        logger.error(f"[FLOORMAP SAVE] Auto save failed: {e}")
 
     rotate_logs(_log_retention_days)
