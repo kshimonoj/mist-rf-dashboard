@@ -76,9 +76,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Mist Dashboard API", lifespan=lifespan)
 
+cors_origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3007")
+cors_origins = [origin.strip() for origin in cors_origins_str.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3007"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

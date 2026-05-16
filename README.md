@@ -78,6 +78,32 @@ Visualize AP metrics, radio configurations, and configuration hierarchy across a
 
 5. Open your browser at `http://localhost:3007`
 
+## 複数環境での設定
+
+### API_URL と CORS_ORIGINS について
+
+フロントエンドとバックエンドの通信設定は、`.env` で環境に合わせて変更します。
+
+#### ローカル開発（Macbook）
+```env
+API_URL=http://localhost:8008
+CORS_ORIGINS=http://localhost:3007
+```
+
+#### リモートサーバー（Ubuntu など）
+```env
+API_URL=http://192.168.19.150:8008
+CORS_ORIGINS=http://localhost:3007,http://192.168.19.150:3007
+```
+
+#### 複数サイトでの運用
+```env
+API_URL=http://mist-dashboard.example.com:8008
+CORS_ORIGINS=http://localhost:3007,http://mist-dashboard.example.com:3007,https://backup.example.com:3007
+```
+
+**注:** `CORS_ORIGINS` は複数のオリジンをカンマ区切りで指定できます。
+
 ## Switching Environments
 
 To switch to a different Mist organization:
