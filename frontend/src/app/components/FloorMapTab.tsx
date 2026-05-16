@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
   fetchFloorMapSites,
@@ -22,22 +22,26 @@ export interface FloorMapTabHandle {
 
 // ── Color utilities ────────────────────────────────────────────────────────────
 
-const CHANNEL_PALETTE = [
-  "#00d4ff", "#ffd700", "#00ff88", "#ff4444", "#ff8c00",
-  "#7c3aed", "#f472b6", "#34d399", "#60a5fa", "#a78bfa",
-  "#fb923c", "#4ade80", "#38bdf8", "#e879f9", "#facc15",
-  "#f87171", "#86efac", "#c4b5fd", "#fbbf24", "#67e8f9",
+const CHANNEL_COLORS = [
+  "#4E79A7",  // 青
+  "#F28E2B",  // オレンジ
+  "#59A14F",  // 緑
+  "#E15759",  // 赤
+  "#76B7B2",  // シアン
+  "#B07AA1",  // 紫
+  "#F1CE63",  // 黄
+  "#FF9DA7",  // ピンク
+  "#9467BD",  // 青紫
+  "#8CD17D",  // 薄緑
+  "#17BECF",  // 水色
+  "#AEC7E8",  // 淡青
 ];
 
-const CH24_FIXED: Record<number, string> = {
-  1: "#00d4ff",
-  6: "#ffd700",
-  11: "#00ff88",
-};
-
-function getChannelColor(band: "24" | "5" | "6", channel: number): string {
-  if (band === "24" && CH24_FIXED[channel]) return CH24_FIXED[channel];
-  return CHANNEL_PALETTE[channel % CHANNEL_PALETTE.length];
+function buildChannelColorMap(channels: number[]): Record<number, string> {
+  const sorted = Array.from(new Set(channels)).sort((a, b) => a - b);
+  const map: Record<number, string> = {};
+  sorted.forEach((ch, i) => { map[ch] = CHANNEL_COLORS[i % CHANNEL_COLORS.length]; });
+  return map;
 }
 
 type BandKey = "radio_24" | "radio_5" | "radio_6";
@@ -112,10 +116,10 @@ interface ApMarkerProps {
   ap: FloorAp;
   map: FloorMapInfo;
   activeBand: BandKey;
-  bandChar: "24" | "5" | "6";
+  channelColorMap: Record<number, string>;
 }
 
-function ApMarker({ ap, map, activeBand, bandChar }: ApMarkerProps) {
+function ApMarker({ ap, map, activeBand, channelColorMap }: ApMarkerProps) {
   const [show, setShow] = useState(false);
 
   if (ap.x == null || ap.y == null || !map.width || !map.height) return null;
@@ -123,7 +127,7 @@ function ApMarker({ ap, map, activeBand, bandChar }: ApMarkerProps) {
   const left = (ap.x / map.width) * 100;
   const top = (ap.y / map.height) * 100;
   const channel = ap[activeBand]?.channel;
-  const color = channel ? getChannelColor(bandChar, channel) : "#475569";
+  const color = channel ? (channelColorMap[channel] ?? "#475569") : "#475569";
   const isOffline = ap.status !== "connected";
 
   return (
@@ -176,7 +180,8 @@ function InterferenceTable({ aps }: { aps: FloorAp[] }) {
     const rows = Array.from(chMap.entries())
       .sort((a, b) => a[0] - b[0])
       .map(([ch, names]) => ({ ch, names, interfering: names.length >= 2 }));
-    return { label, band, rows };
+    const colorMap = buildChannelColorMap(rows.map((r) => r.ch));
+    return { label, band, rows, colorMap };
   }).filter((s) => s.rows.length > 0);
 
   if (sections.length === 0) return null;
@@ -190,7 +195,7 @@ function InterferenceTable({ aps }: { aps: FloorAp[] }) {
         同一チャネル干渉サマリー
       </h3>
       <div className="space-y-4">
-        {sections.map(({ label, band, rows }) => (
+        {sections.map(({ label, band, rows, colorMap }) => (
           <div key={label}>
             <p
               className="text-xs font-bold mb-1 tracking-wider"
@@ -228,7 +233,7 @@ function InterferenceTable({ aps }: { aps: FloorAp[] }) {
                       >
                         <span
                           className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
-                          style={{ backgroundColor: getChannelColor(band, ch) }}
+                          style={{ backgroundColor: colorMap[ch] ?? "#475569" }}
                         />
                         <span style={{ color: "var(--text-primary)" }}>
                           {ch}
@@ -370,11 +375,14 @@ function FloorMapTab({ snapshotSlot } = {}, ref) {
   }, [maps, selectedSiteId, selectedMapId]);
 
   const selectedMap = maps?.find((m) => m.id === selectedMapId) ?? null;
-  const mapAps =
-    aps?.filter((ap) => ap.map_id === selectedMapId) ?? [];
+  const mapAps = aps?.filter((ap) => ap.map_id === selectedMapId) ?? [];
 
-  const activeBandOption =
-    BAND_OPTIONS.find((b) => b.key === activeBandKey) ?? BAND_OPTIONS[1];
+  const channelColorMap = useMemo(() => {
+    const channels = mapAps
+      .map((ap) => ap[activeBandKey]?.channel)
+      .filter((ch): ch is number => ch != null);
+    return buildChannelColorMap(channels);
+  }, [mapAps, activeBandKey]);
 
   const imageUrl =
     selectedSiteId && selectedMapId
@@ -513,7 +521,7 @@ function FloorMapTab({ snapshotSlot } = {}, ref) {
                 ap={ap}
                 map={selectedMap}
                 activeBand={activeBandKey}
-                bandChar={activeBandOption.band}
+                channelColorMap={channelColorMap}
               />
             ))}
 
@@ -537,7 +545,7 @@ function FloorMapTab({ snapshotSlot } = {}, ref) {
                     <span
                       className="w-2.5 h-2.5 rounded-full inline-block"
                       style={{
-                        backgroundColor: getChannelColor(activeBandOption.band, ch),
+                        backgroundColor: channelColorMap[ch] ?? "#475569",
                       }}
                     />
                     <span style={{ color: "var(--text-secondary)" }}>
