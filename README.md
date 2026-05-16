@@ -14,6 +14,11 @@ Visualize AP metrics, radio configurations, and configuration hierarchy across a
 - **Radio Config**: Current radio settings with configuration hierarchy detection
   - Org / Site (RF Template) / Device Profile / Device level detection per band
   - Configuration change detection and history
+- **Floor Map**: Interactive floor plan view with AP overlay
+  - Per-floor AP placement with channel-based color coding
+  - Co-channel interference summary per band (2.4GHz / 5GHz / 6GHz)
+  - AP details on hover (channel, bandwidth, power, noise floor, clients)
+  - Disconnected APs shown with reduced opacity
 - **Snapshot**: Save and replay 72-hour metric snapshots
   - Download/upload snapshot files (.db) for offline review
 - **CSV Export**: Automatic hourly log export with manual save option

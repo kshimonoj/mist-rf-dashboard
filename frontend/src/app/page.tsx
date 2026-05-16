@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCw, Wifi, WifiOff, Activity, History } from "lucide-react";
+import { RefreshCw, Wifi, WifiOff, Activity, History, Map } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import useSWR from "swr";
@@ -10,6 +10,10 @@ import SaveNowButton from "./components/SaveNowButton";
 import PollNowButton from "./components/PollNowButton";
 import SettingsButton from "./components/SettingsModal";
 import SnapshotButton from "./components/SnapshotModal";
+import FloorMapTab from "./components/FloorMapTab";
+
+const TABS = ["Site Overview", "Floor Map"] as const;
+type Tab = (typeof TABS)[number];
 
 function SiteCard({ site }: { site: SiteInfo }) {
   const onlineRate = site.ap_count > 0 ? (site.online_count / site.ap_count) * 100 : 0;
@@ -81,6 +85,7 @@ function SiteCard({ site }: { site: SiteInfo }) {
 }
 
 export default function HomePage() {
+  const [activeTab, setActiveTab] = useState<Tab>("Site Overview");
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
   const { data: sites, isLoading, mutate } = useSWR<SiteInfo[]>(
@@ -137,6 +142,28 @@ export default function HomePage() {
         </div>
       </header>
 
+      {/* Tab bar */}
+      <div className="flex gap-1 mb-6 border-b" style={{ borderColor: "var(--chart-grid)" }}>
+        {TABS.map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm transition-colors -mb-px border-b-2"
+            style={{
+              borderColor: activeTab === tab ? "var(--cyan)" : "transparent",
+              color: activeTab === tab ? "var(--cyan)" : "var(--text-muted)",
+            }}
+          >
+            {tab === "Floor Map" && <Map className="w-3.5 h-3.5" />}
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "Floor Map" && <FloorMapTab />}
+
+      {activeTab === "Site Overview" && (
+      <>
       <div className="grid grid-cols-2 gap-4 mb-8 max-w-sm">
         <div
           className="border rounded-lg p-4 flex items-center gap-3"
@@ -184,6 +211,8 @@ export default function HomePage() {
         <div className="text-center py-20" style={{ color: "var(--text-muted)" }}>
           No sites found. Check your API token and Org ID.
         </div>
+      )}
+      </>
       )}
 
     </main>

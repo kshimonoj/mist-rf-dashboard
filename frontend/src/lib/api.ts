@@ -244,6 +244,44 @@ export async function uploadSnapshotDb(file: File, slot?: number): Promise<Snaps
   return res.json();
 }
 
+// ── Floor Map ─────────────────────────────────────────────────────────────────
+
+export interface FloorMapInfo {
+  id: string;
+  name: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface FloorRadioBand {
+  channel: number | null;
+  bandwidth: number | null;
+  tx_power: number | null;
+  noise_floor: number | null;
+}
+
+export interface FloorAp {
+  id: string;
+  name: string;
+  model: string;
+  status: string;
+  map_id: string | null;
+  x: number | null;
+  y: number | null;
+  num_clients: number;
+  radio_24: FloorRadioBand;
+  radio_5: FloorRadioBand;
+  radio_6: FloorRadioBand;
+}
+
+export const fetchFloorMapSites = () => apiFetch<SiteSimple[]>("/api/floor-map/sites");
+export const fetchFloorMaps = (siteId: string) =>
+  apiFetch<FloorMapInfo[]>(`/api/floor-map/sites/${siteId}/maps`);
+export const fetchFloorAps = (siteId: string) =>
+  apiFetch<FloorAp[]>(`/api/floor-map/sites/${siteId}/aps`);
+export const getFloorMapImageUrl = (siteId: string, mapId: string) =>
+  `${API_BASE}/api/floor-map/sites/${siteId}/maps/${mapId}/image`;
+
 export async function updateSettings(
   body: Partial<Pick<Settings, "polling_interval_seconds" | "log_interval_minutes" | "log_retention_days" | "timezone" | "monitored_site_ids">>
 ): Promise<Settings> {
