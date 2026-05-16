@@ -43,6 +43,11 @@ def migrate_db():
     """既存テーブルのスキーマを更新する。"""
     try:
         with engine.connect() as conn:
+            # ap_metrics: model カラム追加
+            _add_columns(conn, "ap_metrics", [
+                ("model", "VARCHAR"),
+            ])
+
             # ap_metrics: bandwidth / util breakdown カラム追加
             _add_columns(conn, "ap_metrics", [
                 ("radio_24_bandwidth", "INTEGER"),

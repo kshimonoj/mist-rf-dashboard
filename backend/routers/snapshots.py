@@ -25,6 +25,8 @@ _SAFE = re.compile(
     r"^ap_metrics_\d{8}_\d{6}(_[A-Z]{2,6})?_manual\.csv$"
     r"|^ap_metrics_\d{8}_\d{4}(_[A-Z]{2,6})?\.csv$"
     r"|^ap_metrics_\d{8}_\d{6}(_[A-Z]{2,6})?\.csv$"
+    r"|^floormap_\d{8}_\d{4}(_[A-Z]{2,6})?_summary\.csv$"
+    r"|^floormap_\d{8}_\d{6}(_[A-Z]{2,6})?_manual_summary\.csv$"
 )
 
 
@@ -111,6 +113,11 @@ async def create_snapshot() -> dict[str, Any]:
 
         sched_module.last_log_saved_at = now
         sched_module._persist_last_log_saved_at(now)
+
+        try:
+            await sched_module.save_floormap_log(now, tz_obj, tz_abbr, filename_suffix="manual")
+        except Exception as fm_err:
+            logger.warning(f"Floor map log save failed (non-critical): {fm_err}")
 
         return {
             "id": snap.id,

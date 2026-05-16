@@ -1,16 +1,22 @@
 "use client";
 
-import { ArrowLeft, Home, Camera } from "lucide-react";
+import { ArrowLeft, Home, Camera, Map } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
 import useSWR from "swr";
 import { fetchSnapshotSites, fetchSnapshotDbs, SnapshotSite, SnapshotDbMeta } from "@/lib/api";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 import ThemeToggle from "@/app/components/ThemeToggle";
+import FloorMapTab from "@/app/components/FloorMapTab";
+
+const TABS = ["Site Overview", "Floor Map"] as const;
+type TabName = typeof TABS[number];
 
 export default function SnapshotSitePage({ params }: { params: { slot: string } }) {
   const slot = Number(params.slot);
   const { timezone } = useTimezone();
+  const [activeTab, setActiveTab] = useState<TabName>("Site Overview");
 
   const { data: metas } = useSWR<SnapshotDbMeta[]>("snapshot-dbs", fetchSnapshotDbs);
   const { data: sites, isLoading } = useSWR<SnapshotSite[]>(
@@ -72,39 +78,64 @@ export default function SnapshotSitePage({ params }: { params: { slot: string } 
         </div>
       )}
 
-      {isLoading && (
-        <div className="flex justify-center py-20">
-          <div className="text-sm animate-pulse" style={{ color: "var(--cyan)" }}>Loading...</div>
-        </div>
+      {/* Tabs */}
+      <div className="flex gap-1 mb-6 border-b" style={{ borderColor: "var(--chart-grid)" }}>
+        {TABS.map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px"
+            style={{
+              borderBottomColor: activeTab === tab ? "var(--cyan)" : "transparent",
+              color: activeTab === tab ? "var(--cyan)" : "var(--text-muted)",
+            }}
+          >
+            {tab === "Floor Map" && <Map className="w-4 h-4" />}
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "Site Overview" && (
+        <>
+          {isLoading && (
+            <div className="flex justify-center py-20">
+              <div className="text-sm animate-pulse" style={{ color: "var(--cyan)" }}>Loading...</div>
+            </div>
+          )}
+          {!isLoading && sites && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {sites.map((site) => (
+                <Link key={site.id} href={`/snapshot/${slot}/sites/${site.id}`}>
+                  <div
+                    className="border rounded-lg p-5 hover:shadow-lg transition-all cursor-pointer"
+                    style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--border-cyan-hover)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border-cyan)")}
+                  >
+                    <h3 className="font-display font-semibold text-lg mb-2"
+                      style={{ color: "var(--text-primary)" }}>
+                      {site.name}
+                    </h3>
+                    <p className="text-2xl font-bold font-mono" style={{ color: "var(--cyan)" }}>
+                      {site.ap_count}
+                    </p>
+                    <p className="text-sm" style={{ color: "var(--text-muted)" }}>APs</p>
+                  </div>
+                </Link>
+              ))}
+              {sites.length === 0 && (
+                <p className="col-span-full text-center py-10 text-sm" style={{ color: "var(--text-muted)" }}>
+                  サイトが見つかりません
+                </p>
+              )}
+            </div>
+          )}
+        </>
       )}
 
-      {!isLoading && sites && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {sites.map((site) => (
-            <Link key={site.id} href={`/snapshot/${slot}/sites/${site.id}`}>
-              <div
-                className="border rounded-lg p-5 hover:shadow-lg transition-all cursor-pointer"
-                style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--border-cyan-hover)")}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border-cyan)")}
-              >
-                <h3 className="font-display font-semibold text-lg mb-2"
-                  style={{ color: "var(--text-primary)" }}>
-                  {site.name}
-                </h3>
-                <p className="text-2xl font-bold font-mono" style={{ color: "var(--cyan)" }}>
-                  {site.ap_count}
-                </p>
-                <p className="text-sm" style={{ color: "var(--text-muted)" }}>APs</p>
-              </div>
-            </Link>
-          ))}
-          {sites.length === 0 && (
-            <p className="col-span-full text-center py-10 text-sm" style={{ color: "var(--text-muted)" }}>
-              サイトが見つかりません
-            </p>
-          )}
-        </div>
+      {activeTab === "Floor Map" && (
+        <FloorMapTab snapshotSlot={slot} />
       )}
     </main>
   );

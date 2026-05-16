@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -10,11 +11,61 @@ from zoneinfo import ZoneInfo
 from mist.client import MistClient
 import scheduler as sched_module
 
+import logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 SNAPSHOTS_DIR = "/app/data/snapshots"
 MAIN_DB_PATH = "/app/data/mist.db"
 MAX_SLOTS = 2
+
+
+async def _fetch_floor_map_rows(site_ids: set, site_names: dict) -> list[tuple]:
+    """Mist API から全サイトのAPフロアマップ情報を取得してタプルリストで返す。"""
+    client = MistClient()
+    sem = asyncio.Semaphore(5)
+
+    async def _fetch_one(site_id: str) -> list[tuple]:
+        async with sem:
+            site_name = site_names.get(site_id, site_id)
+            maps_raw, devices = await asyncio.gather(
+                client._get(f"/sites/{site_id}/maps"),
+                client.get_site_devices_stats(site_id),
+            )
+            if not isinstance(maps_raw, list):
+                maps_raw = []
+            map_meta = {
+                m.get("id", ""): {
+                    "name": m.get("name", ""),
+                    "width": m.get("width"),
+                    "height": m.get("height"),
+                }
+                for m in maps_raw
+            }
+            rows = []
+            for d in devices:
+                map_id = d.get("map_id") or ""
+                info = map_meta.get(map_id, {})
+                rs = d.get("radio_stat", {}) or {}
+                b24 = rs.get("band_24", {}) or {}
+                b5  = rs.get("band_5",  {}) or {}
+                b6  = rs.get("band_6",  {}) or {}
+                rows.append((
+                    d.get("id", ""), d.get("name", ""), d.get("mac", ""),
+                    d.get("model", ""), d.get("status", ""),
+                    site_id, site_name,
+                    map_id, info.get("name", ""),
+                    info.get("width"), info.get("height"),
+                    d.get("x"), d.get("y"), d.get("num_clients", 0),
+                    b24.get("channel"), b24.get("bandwidth"), b24.get("power"), b24.get("noise_floor"),
+                    b5.get("channel"),  b5.get("bandwidth"),  b5.get("power"),  b5.get("noise_floor"),
+                    b6.get("channel"),  b6.get("bandwidth"),  b6.get("power"),  b6.get("noise_floor"),
+                ))
+            return rows
+
+    results = await asyncio.gather(*[_fetch_one(sid) for sid in site_ids])
+    return [r for rs in results for r in rs]
 
 
 def _snapshot_path(slot: int) -> str:
@@ -145,6 +196,35 @@ async def create_snapshot_db(slot: Optional[int] = Query(None)) -> dict[str, Any
             dst.commit()
         finally:
             src.close()
+            # dst is closed after floor map fetch below
+
+        # Floor map AP positions (async Mist API calls, after SQLite sync ops)
+        try:
+            fm_rows = await _fetch_floor_map_rows(site_ids, site_names)
+            if fm_rows:
+                dst.execute("DROP TABLE IF EXISTS floor_map_aps")
+                dst.execute("""
+                    CREATE TABLE floor_map_aps (
+                        ap_id TEXT, ap_name TEXT, mac TEXT, model TEXT, status TEXT,
+                        site_id TEXT, site_name TEXT,
+                        map_id TEXT, map_name TEXT, map_width REAL, map_height REAL,
+                        x REAL, y REAL, num_clients INTEGER,
+                        band_24_channel INTEGER, band_24_bandwidth INTEGER,
+                        band_24_power REAL, band_24_noise_floor REAL,
+                        band_5_channel INTEGER, band_5_bandwidth INTEGER,
+                        band_5_power REAL, band_5_noise_floor REAL,
+                        band_6_channel INTEGER, band_6_bandwidth INTEGER,
+                        band_6_power REAL, band_6_noise_floor REAL
+                    )
+                """)
+                dst.executemany(
+                    "INSERT INTO floor_map_aps VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    fm_rows,
+                )
+                dst.commit()
+        except Exception as fm_err:
+            logger.warning(f"Floor map snapshot data failed (non-critical): {fm_err}")
+        finally:
             dst.close()
 
     except HTTPException:
@@ -328,6 +408,68 @@ async def get_snapshot_ap_radio_config(slot: int, ap_id: str) -> dict[str, Any]:
                 for c in changes
             ],
         }
+    finally:
+        conn.close()
+
+
+# ─── Floor Map snapshot queries ──────────────────────────────────────────────
+
+@router.get("/api/snapshot-db/{slot}/floor-map/sites")
+async def get_snapshot_floor_map_sites(slot: int) -> list[dict[str, Any]]:
+    conn = _open_ro(slot)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "floor_map_aps" not in tables:
+            return []
+        rows = conn.execute(
+            "SELECT DISTINCT site_id, site_name FROM floor_map_aps ORDER BY site_name"
+        ).fetchall()
+        return [{"id": r[0], "name": r[1] or r[0]} for r in rows]
+    finally:
+        conn.close()
+
+
+@router.get("/api/snapshot-db/{slot}/floor-map/sites/{site_id}/maps")
+async def get_snapshot_floor_map_maps(slot: int, site_id: str) -> list[dict[str, Any]]:
+    conn = _open_ro(slot)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "floor_map_aps" not in tables:
+            return []
+        rows = conn.execute(
+            "SELECT DISTINCT map_id, map_name, map_width, map_height FROM floor_map_aps WHERE site_id=? AND map_id != '' ORDER BY map_name",
+            (site_id,),
+        ).fetchall()
+        return [{"id": r[0], "name": r[1] or r[0], "width": r[2], "height": r[3]} for r in rows]
+    finally:
+        conn.close()
+
+
+@router.get("/api/snapshot-db/{slot}/floor-map/sites/{site_id}/aps")
+async def get_snapshot_floor_map_aps(slot: int, site_id: str) -> list[dict[str, Any]]:
+    conn = _open_ro(slot)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "floor_map_aps" not in tables:
+            return []
+        rows = conn.execute(
+            """SELECT ap_id, ap_name, mac, model, status, map_id, x, y, num_clients,
+                      band_24_channel, band_24_bandwidth, band_24_power, band_24_noise_floor,
+                      band_5_channel,  band_5_bandwidth,  band_5_power,  band_5_noise_floor,
+                      band_6_channel,  band_6_bandwidth,  band_6_power,  band_6_noise_floor
+               FROM floor_map_aps WHERE site_id=?""",
+            (site_id,),
+        ).fetchall()
+        return [
+            {
+                "id": r[0], "name": r[1], "mac": r[2], "model": r[3], "status": r[4],
+                "map_id": r[5] or None, "x": r[6], "y": r[7], "num_clients": r[8] or 0,
+                "radio_24": {"channel": r[9],  "bandwidth": r[10], "tx_power": r[11], "noise_floor": r[12]},
+                "radio_5":  {"channel": r[13], "bandwidth": r[14], "tx_power": r[15], "noise_floor": r[16]},
+                "radio_6":  {"channel": r[17], "bandwidth": r[18], "tx_power": r[19], "noise_floor": r[20]},
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
 

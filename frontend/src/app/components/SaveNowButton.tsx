@@ -2,9 +2,13 @@
 
 import { Save } from "lucide-react";
 import { useState } from "react";
-import { createSnapshot } from "@/lib/api";
+import { createSnapshot, saveFloorMapLog, FloorMapSaveRow } from "@/lib/api";
 
-export default function SaveNowButton() {
+interface SaveNowButtonProps {
+  getFloorMapRows?: () => FloorMapSaveRow[] | null;
+}
+
+export default function SaveNowButton({ getFloorMapRows }: SaveNowButtonProps = {}) {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
@@ -13,6 +17,19 @@ export default function SaveNowButton() {
     setLoading(true);
     try {
       const snap = await createSnapshot();
+
+      // Floor Map データが取得できる場合は一緒に保存
+      if (getFloorMapRows) {
+        const rows = getFloorMapRows();
+        if (rows && rows.length > 0) {
+          try {
+            await saveFloorMapLog(rows);
+          } catch {
+            // non-critical: AP metrics 保存は成功しているので無視
+          }
+        }
+      }
+
       setToast({ msg: `保存完了: ${snap.ap_count} APs`, ok: true });
     } catch {
       setToast({ msg: "保存に失敗しました", ok: false });

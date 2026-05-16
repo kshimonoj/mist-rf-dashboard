@@ -2,7 +2,7 @@
 
 import { RefreshCw, Wifi, WifiOff, Activity, History, Map } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import useSWR from "swr";
 import { fetchSites, SiteInfo } from "@/lib/api";
 import ThemeToggle from "./components/ThemeToggle";
@@ -10,7 +10,7 @@ import SaveNowButton from "./components/SaveNowButton";
 import PollNowButton from "./components/PollNowButton";
 import SettingsButton from "./components/SettingsModal";
 import SnapshotButton from "./components/SnapshotModal";
-import FloorMapTab from "./components/FloorMapTab";
+import FloorMapTab, { FloorMapTabHandle } from "./components/FloorMapTab";
 
 const TABS = ["Site Overview", "Floor Map"] as const;
 type Tab = (typeof TABS)[number];
@@ -87,6 +87,7 @@ function SiteCard({ site }: { site: SiteInfo }) {
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<Tab>("Site Overview");
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const floorMapRef = useRef<FloorMapTabHandle>(null);
 
   const { data: sites, isLoading, mutate } = useSWR<SiteInfo[]>(
     "sites",
@@ -119,7 +120,7 @@ export default function HomePage() {
             </p>
           </div>
           <PollNowButton onSuccess={() => mutate()} />
-          <SaveNowButton />
+          <SaveNowButton getFloorMapRows={() => floorMapRef.current?.getRows() ?? null} />
           <SnapshotButton />
           <SettingsButton />
           <Link
@@ -160,60 +161,61 @@ export default function HomePage() {
         ))}
       </div>
 
-      {activeTab === "Floor Map" && <FloorMapTab />}
-
-      {activeTab === "Site Overview" && (
-      <>
-      <div className="grid grid-cols-2 gap-4 mb-8 max-w-sm">
-        <div
-          className="border rounded-lg p-4 flex items-center gap-3"
-          style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}
-        >
-          <Wifi className="w-6 h-6" style={{ color: "var(--green)" }} />
-          <div>
-            <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>
-              {totalOnline}
-            </p>
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Online APs</p>
-          </div>
-        </div>
-        <div
-          className="border rounded-lg p-4 flex items-center gap-3"
-          style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}
-        >
-          <WifiOff className="w-6 h-6" style={{ color: "var(--red)" }} />
-          <div>
-            <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>
-              {totalAps - totalOnline}
-            </p>
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Offline APs</p>
-          </div>
-        </div>
+      {/* Always mounted — visibility controlled by CSS to preserve state */}
+      <div className={activeTab === "Floor Map" ? "block" : "hidden"}>
+        <FloorMapTab ref={floorMapRef} />
       </div>
 
-      {isLoading && (
-        <div className="flex justify-center py-20">
-          <div className="text-sm animate-pulse" style={{ color: "var(--cyan)" }}>
-            Loading sites...
+      <div className={activeTab === "Site Overview" ? "block" : "hidden"}>
+        <div className="grid grid-cols-2 gap-4 mb-8 max-w-sm">
+          <div
+            className="border rounded-lg p-4 flex items-center gap-3"
+            style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}
+          >
+            <Wifi className="w-6 h-6" style={{ color: "var(--green)" }} />
+            <div>
+              <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>
+                {totalOnline}
+              </p>
+              <p className="text-sm" style={{ color: "var(--text-muted)" }}>Online APs</p>
+            </div>
+          </div>
+          <div
+            className="border rounded-lg p-4 flex items-center gap-3"
+            style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}
+          >
+            <WifiOff className="w-6 h-6" style={{ color: "var(--red)" }} />
+            <div>
+              <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>
+                {totalAps - totalOnline}
+              </p>
+              <p className="text-sm" style={{ color: "var(--text-muted)" }}>Offline APs</p>
+            </div>
           </div>
         </div>
-      )}
 
-      {!isLoading && sites && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {sites.map((site) => (
-            <SiteCard key={site.id} site={site} />
-          ))}
-        </div>
-      )}
+        {isLoading && (
+          <div className="flex justify-center py-20">
+            <div className="text-sm animate-pulse" style={{ color: "var(--cyan)" }}>
+              Loading sites...
+            </div>
+          </div>
+        )}
 
-      {!isLoading && sites?.length === 0 && (
-        <div className="text-center py-20" style={{ color: "var(--text-muted)" }}>
-          No sites found. Check your API token and Org ID.
-        </div>
-      )}
-      </>
-      )}
+        {!isLoading && sites && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {sites.map((site) => (
+              <SiteCard key={site.id} site={site} />
+            ))}
+          </div>
+        )}
+
+        {!isLoading && sites?.length === 0 && (
+          <div className="text-center py-20" style={{ color: "var(--text-muted)" }}>
+            No sites found. Check your API token and Org ID.
+          </div>
+        )}
+      </div>
 
     </main>
   );

@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
     _init_app_settings()
     interval = int(os.getenv("POLLING_INTERVAL_SECONDS", "300"))
     scheduler.add_job(poll_all_sites, "interval", seconds=interval, id="poll_mist")
-    scheduler.add_job(save_hourly_logs, "cron", minute=0, id="hourly_csv_log")
+    scheduler.add_job(save_hourly_logs, "cron", minute=0, id="hourly_csv_log", misfire_grace_time=600)
     scheduler.start()
     yield
     scheduler.shutdown()

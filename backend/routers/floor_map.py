@@ -30,6 +30,7 @@ async def get_maps(site_id: str) -> list[dict[str, Any]]:
             "name": m.get("name", ""),
             "width": m.get("width"),
             "height": m.get("height"),
+            "ppm": m.get("ppm"),
         }
         for m in result
     ]
@@ -75,6 +76,7 @@ async def get_site_aps(site_id: str) -> list[dict[str, Any]]:
         result.append({
             "id": d.get("id", ""),
             "name": d.get("name", ""),
+            "mac": d.get("mac", ""),
             "model": d.get("model", ""),
             "status": d.get("status", "disconnected"),
             "map_id": d.get("map_id"),
