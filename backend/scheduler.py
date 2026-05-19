@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from mist.client import MistClient
+from mist.client import MistClient, SLE_METRICS, parse_sle_metric
 from models import AppSettings, ApMetrics, RadioConfigChange, RadioConfigCurrent, Snapshot
 from radio_helpers import detect_band_source, overall_source
 from utils import fmt_dt, fmt_dt_tz
@@ -38,6 +38,20 @@ def _persist_last_log_saved_at(dt: datetime) -> None:
 
 LOGS_DIR = "/app/data/logs"
 _MAX_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB
+
+SLE_CSV_COLUMNS = [
+    "timestamp", "site_id", "site_name", "ap_id", "ap_name",
+    "capacity_score",
+    "capacity_wifi_interference", "capacity_non_wifi_interference",
+    "capacity_client_count", "capacity_client_usage",
+    "capacity_impact_users", "capacity_total_users",
+    "throughput_score", "throughput_impact_users", "throughput_total_users",
+    "coverage_score", "coverage_impact_users", "coverage_total_users",
+    "time_to_connect_score", "time_to_connect_avg_sec",
+    "ttc_impact_users", "ttc_total_users",
+    "roaming_score", "roaming_impact_users", "roaming_total_users",
+    "ap_availability_score", "ap_availability_impact_users", "ap_availability_total_users",
+]
 
 FLOORMAP_SUMMARY_CSV_COLUMNS = [
     "timestamp", "site_name", "map_name", "band", "channel",
@@ -442,6 +456,116 @@ async def save_floormap_log(
     return filename
 
 
+def _build_sle_csv_row(ts_str: str, site_id: str, site_name: str,
+                       ap_id: str, ap_name: str, metric_data: dict) -> dict:
+    cap = metric_data.get("capacity", {})
+    thr = metric_data.get("throughput", {})
+    cov = metric_data.get("coverage", {})
+    ttc = metric_data.get("time-to-connect", {})
+    roam = metric_data.get("roaming", {})
+    apav = metric_data.get("ap-availability", {})
+    clf = cap.get("classifiers", {}) or {}
+    return {
+        "timestamp": ts_str,
+        "site_id": site_id,
+        "site_name": site_name,
+        "ap_id": ap_id,
+        "ap_name": ap_name,
+        "capacity_score": cap.get("score"),
+        "capacity_wifi_interference": clf.get("wifi_interference"),
+        "capacity_non_wifi_interference": clf.get("non_wifi_interference"),
+        "capacity_client_count": clf.get("client_count"),
+        "capacity_client_usage": clf.get("client_usage"),
+        "capacity_impact_users": cap.get("impact_users"),
+        "capacity_total_users": cap.get("total_users"),
+        "throughput_score": thr.get("score"),
+        "throughput_impact_users": thr.get("impact_users"),
+        "throughput_total_users": thr.get("total_users"),
+        "coverage_score": cov.get("score"),
+        "coverage_impact_users": cov.get("impact_users"),
+        "coverage_total_users": cov.get("total_users"),
+        "time_to_connect_score": ttc.get("score"),
+        "time_to_connect_avg_sec": ttc.get("avg_sec"),
+        "ttc_impact_users": ttc.get("impact_users"),
+        "ttc_total_users": ttc.get("total_users"),
+        "roaming_score": roam.get("score"),
+        "roaming_impact_users": roam.get("impact_users"),
+        "roaming_total_users": roam.get("total_users"),
+        "ap_availability_score": apav.get("score"),
+        "ap_availability_impact_users": apav.get("impact_users"),
+        "ap_availability_total_users": apav.get("total_users"),
+    }
+
+
+async def save_sle_log(now: datetime, tz_obj, tz_abbr: str) -> None:
+    """全APの6 SLEメトリクスを取得してCSVに保存する。"""
+    client = MistClient()
+    org_id = os.getenv("MIST_ORG_ID", "")
+    sites = await client.get_sites(org_id)
+    if not sites:
+        logger.info("[SLE SAVE] No sites.")
+        return
+    if _monitored_site_ids:
+        sites = [s for s in sites if s.get("id") in _monitored_site_ids]
+
+    site_names = {s.get("id", ""): s.get("name", "") for s in sites}
+    now_local = now.astimezone(tz_obj)
+    ts_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 全サイトの AP 一覧を収集
+    ap_list: list[tuple[str, str, str]] = []
+    for site in sites:
+        site_id = site.get("id", "")
+        try:
+            devices = await client.get_site_devices_stats(site_id)
+            for d in devices:
+                ap_list.append((site_id, d.get("id", ""), d.get("name", "")))
+        except Exception as e:
+            logger.error(f"[SLE SAVE] Failed to get devices for site {site_id}: {e}")
+
+    if not ap_list:
+        logger.info("[SLE SAVE] No APs found.")
+        return
+
+    semaphore = asyncio.Semaphore(10)
+
+    async def fetch_ap(site_id: str, ap_id: str, ap_name: str) -> dict | None:
+        async with semaphore:
+            try:
+                results = await asyncio.gather(
+                    *[client.get_ap_sle(site_id, ap_id, m) for m in SLE_METRICS],
+                    return_exceptions=True,
+                )
+                metric_data = {
+                    m: (parse_sle_metric(r, m) if not isinstance(r, Exception) else {})
+                    for m, r in zip(SLE_METRICS, results)
+                }
+                return _build_sle_csv_row(
+                    ts_str, site_id, site_names.get(site_id, ""),
+                    ap_id, ap_name, metric_data,
+                )
+            except Exception as e:
+                logger.error(f"[SLE SAVE] Failed for AP {ap_id}: {e}")
+                return None
+
+    rows_or_none = await asyncio.gather(*[fetch_ap(s, a, n) for s, a, n in ap_list])
+    rows = [r for r in rows_or_none if r is not None]
+
+    if not rows:
+        logger.info("[SLE SAVE] No SLE data, skipping.")
+        return
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    filename = f"sle_metrics_{now_local.strftime('%Y%m%d_%H%M')}_{tz_abbr}.csv"
+    filepath = os.path.join(LOGS_DIR, filename)
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=SLE_CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    logger.info(f"[SLE SAVE] Saved: {filepath} ({len(rows)} records)")
+
+
 async def save_hourly_logs():
     """前回保存以降の ap_metrics 全件を CSV に書き出す（期間ログ方式）。"""
     global last_log_saved_at
@@ -537,5 +661,10 @@ async def save_hourly_logs():
         await save_floormap_log(now, tz_obj, tz_abbr)
     except Exception as e:
         logger.error(f"[FLOORMAP SAVE] Auto save failed: {e}")
+
+    try:
+        await save_sle_log(now, tz_obj, tz_abbr)
+    except Exception as e:
+        logger.error(f"[SLE SAVE] Auto save failed: {e}")
 
     rotate_logs(_log_retention_days)

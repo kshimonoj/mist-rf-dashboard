@@ -15,6 +15,7 @@ import {
   CHANGE_FIELD_COLORS, SourceBadge, MetricCard, CurrentConfigSnapshot,
   RadioBandPanel, ChartSection,
 } from "@/app/components/ApDetailShared";
+import SleSection from "@/app/components/SleSection";
 
 type HourRange = 1 | 6 | 24 | 72;
 
@@ -314,7 +315,10 @@ export default function ApDetailPage({
         />
       </section>
 
-      {/* Section 4: 変更履歴テーブル */}
+      {/* Section 4: SLE */}
+      <SleSection mode="ap" id={apId} />
+
+      {/* Section 5: 変更履歴テーブル */}
       <section className={sectionClass} style={sectionStyle}>
         <h2 className="text-sm font-display font-semibold mb-4 tracking-wider" style={{ color: "var(--cyan)" }}>
           CONFIG CHANGE HISTORY

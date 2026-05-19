@@ -118,6 +118,34 @@ export const fetchApMetrics = (apId: string, hours: number) =>
 export const fetchApRadioConfig = (apId: string, siteId?: string) =>
   apiFetch<ApRadioConfig>(`/api/aps/${apId}/radio-config${siteId ? `?site_id=${siteId}` : ""}`);
 
+export interface SleMetricData {
+  score: number | null;
+  impact_users: number;
+  total_users: number;
+  classifiers?: {
+    wifi_interference: number | null;
+    non_wifi_interference: number | null;
+    client_count: number | null;
+    client_usage: number | null;
+  };
+  avg_sec?: number | null;
+}
+
+export interface SleData {
+  capacity: SleMetricData;
+  throughput: SleMetricData;
+  coverage: SleMetricData;
+  time_to_connect: SleMetricData;
+  roaming: SleMetricData;
+  ap_availability: SleMetricData;
+}
+
+export const fetchSiteSle = (siteId: string, duration = "1h") =>
+  apiFetch<SleData>(`/api/sites/${siteId}/sle?duration=${duration}`);
+
+export const fetchApSle = (apId: string, duration = "1h") =>
+  apiFetch<SleData>(`/api/aps/${apId}/sle?duration=${duration}`);
+
 export interface LogFileInfo {
   filename: string;
   size_bytes: number;

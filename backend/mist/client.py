@@ -10,6 +10,52 @@ logger = logging.getLogger(__name__)
 RADIO_KEYWORDS = ["radio", "rf_template", "band_24", "band_5", "band_6",
                   "channel", "tx_power", "bandwidth", "antenna_gain"]
 
+SLE_METRICS = ["capacity", "throughput", "coverage", "time-to-connect", "roaming", "ap-availability"]
+
+
+def _sum_sle_samples(samples: list) -> tuple[float, float]:
+    """total / degraded を合計。total==1 はnull番兵として除外。"""
+    total = 0.0
+    degraded = 0.0
+    for s in samples:
+        t = s.get("total")
+        d = s.get("degraded") or 0.0
+        if t is None or t == 1:
+            continue
+        total += t
+        degraded += d
+    return total, degraded
+
+
+def parse_sle_metric(data: dict, metric: str) -> dict:
+    """Mist SLE summary レスポンスを共通フォーマットに変換する。"""
+    sle = data.get("sle", {}) if isinstance(data, dict) else {}
+    samples = sle.get("samples") or []
+    total_sum, degraded_sum = _sum_sle_samples(samples)
+    score = round((total_sum - degraded_sum) / total_sum * 100, 1) if total_sum > 0 else None
+    result: dict = {
+        "score": score,
+        "impact_users": round(degraded_sum),
+        "total_users": round(total_sum),
+    }
+    if metric == "capacity":
+        clf_map: dict = {}
+        for clf in (sle.get("classifiers") or []):
+            clf_name = clf.get("name", "").replace("-", "_")
+            _, clf_deg = _sum_sle_samples(clf.get("samples") or [])
+            clf_map[clf_name] = round(clf_deg / total_sum * 100, 1) if total_sum > 0 else None
+        result["classifiers"] = {
+            "wifi_interference": clf_map.get("wifi_interference"),
+            "non_wifi_interference": clf_map.get("non_wifi_interference"),
+            "client_count": clf_map.get("client_count"),
+            "client_usage": clf_map.get("client_usage"),
+        }
+    if metric == "time-to-connect":
+        vals = [s.get("value") for s in samples
+                if s.get("value") is not None and s.get("total") not in (None, 1)]
+        result["avg_sec"] = round(sum(vals) / len(vals), 2) if vals else None
+    return result
+
 
 class MistClient:
     def __init__(self):
@@ -127,3 +173,28 @@ class MistClient:
     async def get_org_device_profiles(self, org_id: str) -> list[dict]:
         result = await self._get(f"/orgs/{org_id}/deviceprofiles", params={"type": "ap"})
         return result if isinstance(result, list) else []
+
+    async def get_site_sle(self, site_id: str, metric: str, duration: str = "1h") -> dict:
+        result = await self._get(
+            f"/sites/{site_id}/sle/site/{site_id}/metric/{metric}/summary",
+            params={"duration": duration},
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def get_ap_sle(self, site_id: str, ap_id: str, metric: str, duration: str = "1h") -> dict:
+        result = await self._get(
+            f"/sites/{site_id}/sle/ap/{ap_id}/metric/{metric}/summary",
+            params={"duration": duration},
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def get_site_clients(self, site_id: str, ap_id: Optional[str] = None) -> list[dict]:
+        params: dict = {"limit": 1000}
+        if ap_id:
+            params["ap_id"] = ap_id
+        result = await self._get(f"/sites/{site_id}/stats/clients", params=params)
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return []

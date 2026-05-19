@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 ORG_ID = os.getenv("MIST_ORG_ID", "")
 
-
 async def _empty_list() -> list:
     return []
 
