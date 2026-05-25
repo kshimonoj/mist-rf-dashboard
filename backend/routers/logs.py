@@ -26,6 +26,8 @@ _SAFE_FILENAME = re.compile(
     r"|^ap_metrics_\d{8}_\d{6}(_[A-Z]{2,6})?\.csv$"
     r"|^floormap_\d{8}_\d{4}(_[A-Z]{2,6})?_summary\.csv$"
     r"|^floormap_\d{8}_\d{6}(_[A-Z]{2,6})?_manual_summary\.csv$"
+    r"|^sle_metrics_\d{8}_\d{4}(_[A-Z]{2,6})?\.csv$"
+    r"|^sle_metrics_\d{8}_\d{6}(_[A-Z]{2,6})?\.csv$"
 )
 
 

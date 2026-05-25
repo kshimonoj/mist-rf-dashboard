@@ -15,8 +15,8 @@ import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 
 type TriggerFilter = "all" | "manual" | "auto";
-type TypeFilter = "all" | "ap_metrics" | "floormap";
-type FileType = "ap_metrics" | "floormap";
+type TypeFilter = "all" | "ap_metrics" | "floormap" | "sle_metrics";
+type FileType = "ap_metrics" | "floormap" | "sle_metrics";
 type Tab = "snapshots" | "csv-logs";
 
 interface UnifiedLogRow {
@@ -52,18 +52,33 @@ function TriggerBadge({ trigger }: { trigger: string }) {
 }
 
 function TypeBadge({ fileType }: { fileType: FileType }) {
-  const isFloor = fileType === "floormap";
+  if (fileType === "floormap") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-mono"
+        style={{ borderColor: "var(--purple)", color: "var(--purple)", backgroundColor: "rgba(124,58,237,0.08)" }}
+      >
+        <Map className="w-3 h-3" />
+        Floor Map
+      </span>
+    );
+  }
+  if (fileType === "sle_metrics") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-mono"
+        style={{ borderColor: "var(--green)", color: "var(--green)", backgroundColor: "rgba(0,255,128,0.08)" }}
+      >
+        SLE Metrics
+      </span>
+    );
+  }
   return (
     <span
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-mono"
-      style={
-        isFloor
-          ? { borderColor: "var(--purple)", color: "var(--purple)", backgroundColor: "rgba(124,58,237,0.08)" }
-          : { borderColor: "var(--text-muted)", color: "var(--text-muted)", backgroundColor: "transparent" }
-      }
+      style={{ borderColor: "var(--text-muted)", color: "var(--text-muted)", backgroundColor: "transparent" }}
     >
-      {isFloor && <Map className="w-3 h-3" />}
-      {isFloor ? "Floor Map" : "AP Metrics"}
+      AP Metrics
     </span>
   );
 }
@@ -190,10 +205,12 @@ function CsvLogsTab() {
     return (logData?.files ?? []).map((f: LogFileInfo) => {
       const snap = snapIndex[f.filename];
       const isFloormap = f.filename.startsWith("floormap_");
+      const isSleMetrics = f.filename.startsWith("sle_metrics_");
       const isManual = f.filename.includes("_manual");
+      const fileType: FileType = isFloormap ? "floormap" : isSleMetrics ? "sle_metrics" : "ap_metrics";
       return {
         filename: f.filename,
-        fileType: (isFloormap ? "floormap" : "ap_metrics") as FileType,
+        fileType,
         savedAt: snap?.saved_at ?? f.created_at,
         triggeredBy: snap?.triggered_by ?? (isManual ? "manual" : "auto"),
         siteCount: snap?.site_count ?? null,
@@ -265,6 +282,7 @@ function CsvLogsTab() {
             <option value="all">All</option>
             <option value="ap_metrics">AP Metrics</option>
             <option value="floormap">Floor Map</option>
+            <option value="sle_metrics">SLE Metrics</option>
           </select>
         </div>
         <div>
@@ -280,7 +298,7 @@ function CsvLogsTab() {
             <option value="auto">Auto</option>
           </select>
         </div>
-        {typeFilter !== "floormap" && (
+        {typeFilter !== "floormap" && typeFilter !== "sle_metrics" && (
           <>
             <div>
               <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Site Filter</label>
@@ -434,6 +452,16 @@ function CsvLogsTab() {
                       >
                         <Download className="w-3 h-3" />
                         {selectedSiteId || selectedApId ? "Filtered DL" : "Download"}
+                      </a>
+                    ) : row.fileType === "sle_metrics" ? (
+                      <a
+                        href={getLogDownloadUrl(row.filename)}
+                        download
+                        className="flex items-center gap-1 px-2 py-1 rounded border text-xs transition-all whitespace-nowrap"
+                        style={{ borderColor: "var(--green)", color: "var(--green)" }}
+                      >
+                        <Download className="w-3 h-3" />
+                        Download
                       </a>
                     ) : (
                       <a
