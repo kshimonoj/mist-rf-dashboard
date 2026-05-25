@@ -123,7 +123,10 @@ export default function ApDetailPage({
         </div>
       </header>
 
-      {/* Section 1: リアルタイム概要 */}
+      {/* Section 1: SLE */}
+      <SleSection mode="ap" id={apId} />
+
+      {/* Section 2: リアルタイム概要 */}
       <section className={sectionClass} style={sectionStyle}>
         <h2 className="text-sm font-display font-semibold mb-4 tracking-wider" style={{ color: "var(--cyan)" }}>
           REALTIME STATUS
@@ -314,9 +317,6 @@ export default function ApDetailPage({
           configSource={bandSource(bandTab)}
         />
       </section>
-
-      {/* Section 4: SLE */}
-      <SleSection mode="ap" id={apId} />
 
       {/* Section 5: 変更履歴テーブル */}
       <section className={sectionClass} style={sectionStyle}>

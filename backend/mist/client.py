@@ -13,24 +13,33 @@ RADIO_KEYWORDS = ["radio", "rf_template", "band_24", "band_5", "band_6",
 SLE_METRICS = ["capacity", "throughput", "coverage", "time-to-connect", "roaming", "ap-availability"]
 
 
-def _sum_sle_samples(samples: list) -> tuple[float, float]:
-    """total / degraded を合計。total==1 はnull番兵として除外。"""
-    total = 0.0
-    degraded = 0.0
-    for s in samples:
-        t = s.get("total")
-        d = s.get("degraded") or 0.0
+def _sum_sle_samples(samples: dict) -> tuple[float, float]:
+    """samples は {"total": [...], "degraded": [...]} 形式。total==1 はnull番兵として除外。"""
+    if not isinstance(samples, dict):
+        return 0.0, 0.0
+    totals = samples.get("total") or []
+    degradeds = samples.get("degraded") or []
+    total_sum = 0.0
+    degraded_sum = 0.0
+    for t, d in zip(totals, degradeds):
         if t is None or t == 1:
             continue
-        total += t
-        degraded += d
-    return total, degraded
+        total_sum += t or 0.0
+        degraded_sum += d or 0.0
+    return total_sum, degraded_sum
 
 
 def parse_sle_metric(data: dict, metric: str) -> dict:
-    """Mist SLE summary レスポンスを共通フォーマットに変換する。"""
-    sle = data.get("sle", {}) if isinstance(data, dict) else {}
-    samples = sle.get("samples") or []
+    """Mist SLE summary レスポンスを共通フォーマットに変換する。
+
+    実際のレスポンス構造:
+      data["sle"]["samples"] = {"total": [...], "degraded": [...], "value": [...]}
+      data["classifiers"]    = [{"name": "wifi-interference", "samples": {...}}, ...]
+    """
+    if not isinstance(data, dict):
+        return {"score": None, "impact_users": 0, "total_users": 0}
+    sle = data.get("sle") or {}
+    samples = sle.get("samples") or {}
     total_sum, degraded_sum = _sum_sle_samples(samples)
     score = round((total_sum - degraded_sum) / total_sum * 100, 1) if total_sum > 0 else None
     result: dict = {
@@ -39,10 +48,11 @@ def parse_sle_metric(data: dict, metric: str) -> dict:
         "total_users": round(total_sum),
     }
     if metric == "capacity":
+        # classifiers はトップレベル (data["classifiers"])
         clf_map: dict = {}
-        for clf in (sle.get("classifiers") or []):
+        for clf in (data.get("classifiers") or []):
             clf_name = clf.get("name", "").replace("-", "_")
-            _, clf_deg = _sum_sle_samples(clf.get("samples") or [])
+            _, clf_deg = _sum_sle_samples(clf.get("samples") or {})
             clf_map[clf_name] = round(clf_deg / total_sum * 100, 1) if total_sum > 0 else None
         result["classifiers"] = {
             "wifi_interference": clf_map.get("wifi_interference"),
@@ -51,8 +61,10 @@ def parse_sle_metric(data: dict, metric: str) -> dict:
             "client_usage": clf_map.get("client_usage"),
         }
     if metric == "time-to-connect":
-        vals = [s.get("value") for s in samples
-                if s.get("value") is not None and s.get("total") not in (None, 1)]
+        values = samples.get("value") or []
+        totals = samples.get("total") or []
+        vals = [v for v, t in zip(values, totals)
+                if v is not None and t not in (None, 1)]
         result["avg_sec"] = round(sum(vals) / len(vals), 2) if vals else None
     return result
 
