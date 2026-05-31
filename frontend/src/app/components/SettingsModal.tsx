@@ -64,6 +64,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const [credOrgId, setCredOrgId] = useState("");
   const [credRegion, setCredRegion] = useState("https://api.mist.com/api/v1");
   const [credCustomUrl, setCredCustomUrl] = useState("");
+  const [credSettingsKey, setCredSettingsKey] = useState("");
   const [credSaving, setCredSaving] = useState(false);
   const [credToast, setCredToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const credInitialized = useRef(false);
@@ -134,13 +135,17 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
     setCredSaving(true);
     try {
       const baseUrl = credRegion === "custom" ? credCustomUrl.trim() : credRegion;
-      await updateCredentials({
-        ...(credToken ? { mist_api_token: credToken } : {}),
-        mist_org_id: credOrgId.trim(),
-        mist_base_url: baseUrl,
-      });
+      await updateCredentials(
+        {
+          ...(credToken ? { mist_api_token: credToken } : {}),
+          mist_org_id: credOrgId.trim(),
+          mist_base_url: baseUrl,
+        },
+        credSettingsKey || undefined
+      );
       await mutateCredentials();
       setCredToken("");
+      setCredSettingsKey("");
       setCredToast({ msg: "設定を保存しました。次回ポーリング時から反映されます。", ok: true });
       setTimeout(() => setCredToast(null), 4000);
     } catch (err) {
@@ -292,6 +297,25 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                 </p>
               )}
             </div>
+
+            {credData?.secret_required && (
+              <div>
+                <label className="block text-sm font-mono mb-1" style={{ color: "var(--text-secondary)" }}>
+                  Admin Key <span style={{ color: "var(--text-muted)" }}>(SETTINGS_SECRET)</span>
+                </label>
+                <input
+                  type="password"
+                  value={credSettingsKey}
+                  onChange={(e) => setCredSettingsKey(e.target.value)}
+                  placeholder="サーバー設定の SETTINGS_SECRET 値"
+                  className="w-full px-3 py-2 rounded border bg-transparent text-sm font-mono"
+                  style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
+                />
+                <p className="text-xs mt-1 font-mono" style={{ color: "var(--text-muted)" }}>
+                  このサーバーは管理者キーが必要です
+                </p>
+              </div>
+            )}
 
             <div className="flex items-center justify-between">
               <div className="flex-1">

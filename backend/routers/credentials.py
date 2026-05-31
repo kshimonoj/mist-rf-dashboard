@@ -1,7 +1,7 @@
 import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,15 @@ from database import get_db
 from models import Credentials
 
 router = APIRouter()
+
+# If SETTINGS_SECRET is set, POST /api/credentials requires X-Settings-Key header.
+# Leave empty to disable the guard (suitable for local-only deployments).
+_settings_secret: str = os.getenv("SETTINGS_SECRET", "")
+
+
+def _check_settings_key(x_settings_key: str = Header(default="")) -> None:
+    if _settings_secret and x_settings_key != _settings_secret:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Settings-Key header")
 
 
 def _mask_token(token: str | None) -> str:
@@ -45,10 +54,11 @@ async def get_credentials(db: Session = Depends(get_db)) -> dict[str, Any]:
         "mist_api_token": _mask_token(token),
         "mist_org_id": org_id or "",
         "mist_base_url": base_url or "",
+        "secret_required": bool(_settings_secret),
     }
 
 
-@router.post("/api/credentials")
+@router.post("/api/credentials", dependencies=[Depends(_check_settings_key)])
 async def update_credentials(
     body: CredentialsUpdate, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
@@ -72,4 +82,5 @@ async def update_credentials(
         "mist_api_token": _mask_token(cred.mist_api_token),
         "mist_org_id": cred.mist_org_id or "",
         "mist_base_url": cred.mist_base_url or "",
+        "secret_required": bool(_settings_secret),
     }

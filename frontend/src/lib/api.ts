@@ -381,18 +381,20 @@ export interface CredentialsData {
   mist_api_token: string;
   mist_org_id: string;
   mist_base_url: string;
+  secret_required: boolean;
 }
 
 export const fetchCredentials = () => apiFetch<CredentialsData>("/api/credentials");
 
-export async function updateCredentials(body: {
-  mist_api_token?: string;
-  mist_org_id?: string;
-  mist_base_url?: string;
-}): Promise<CredentialsData> {
+export async function updateCredentials(
+  body: { mist_api_token?: string; mist_org_id?: string; mist_base_url?: string },
+  settingsKey?: string
+): Promise<CredentialsData> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (settingsKey) headers["X-Settings-Key"] = settingsKey;
   const res = await fetch(`${API_BASE}/api/credentials`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   if (!res.ok) {

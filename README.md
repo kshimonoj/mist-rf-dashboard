@@ -182,6 +182,19 @@ data/
 - API tokens stored in the database are masked (`sk-t****`) in the GUI and API responses
 - Use environment-specific `.env` files (e.g. `.env.prod`) and keep them local
 
+### Protecting the Credentials API
+
+The `POST /api/credentials` endpoint modifies the stored Mist API token. If your backend
+port (8008) is reachable by untrusted clients, set `SETTINGS_SECRET` in `.env`:
+
+```env
+SETTINGS_SECRET=your_random_secret_here  # openssl rand -hex 32
+```
+
+When set, the endpoint requires an `X-Settings-Key: <secret>` header. The GUI
+will prompt for the Admin Key automatically. If `SETTINGS_SECRET` is empty, the
+endpoint is open — acceptable for localhost-only deployments.
+
 ## Tech Stack
 
 - **Frontend**: Next.js 14, TypeScript, Tailwind CSS, Recharts, SWR
