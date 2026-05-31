@@ -28,6 +28,7 @@ Visualize AP metrics, radio configurations, and configuration hierarchy across a
     (band / channel / AP count / AP list / interference flag)
   - Auto-save on interval, manual save via "Save Now"
   - History page: CSV Logs tab shown first, sorted by timestamp descending
+- **Settings (GUI)**: Configure API credentials, region, polling interval, and more via the browser UI
 - **Dark/Light Mode**: Toggle via UI
 - **Timezone Support**: Configurable timezone for all timestamps
 - **Polling Control**: Adjustable polling interval via UI (no restart required)
@@ -46,37 +47,76 @@ Visualize AP metrics, radio configurations, and configuration hierarchy across a
    cd mist-rf-dashboard
    ```
 
-2. Create `.env` file from the example:
+2. Start the application:
    ```bash
-   cp .env.example .env
+   docker compose up -d
    ```
 
-3. Edit `.env` with your Mist credentials:
-   ```
-   MIST_API_TOKEN=your_api_token
-   MIST_ORG_ID=your_org_id
-   MIST_BASE_URL=https://api.mist.com/api/v1
-   POLLING_INTERVAL_SECONDS=300
-   TIMEZONE=Asia/Tokyo
-   API_URL=http://localhost:8008
-   ```
+3. Open `http://localhost:3007` in your browser.
 
-   > **Note**: Adjust `MIST_BASE_URL` for your region:
-   > - Global: `https://api.mist.com/api/v1`
-   > - EU: `https://api.eu.mist.com/api/v1`
-   > - APAC (AC2): `https://api.ac2.mist.com/api/v1`
-   > - APAC (AC5): `https://api.ac5.mist.com/api/v1`
+4. Configure your credentials in the Settings page (see [Settings (GUI)](#settings-gui) below).
 
-   > **Note**: `API_URL` is the backend URL as seen from the browser:
-   > - Local Mac: `http://localhost:8008`
-   > - Remote server: `http://<SERVER_IP>:8008`
+### Optional: Configure via .env
 
-4. Start the application:
-   ```bash
-   docker-compose up --build
-   ```
+If you prefer to set credentials via environment variables instead of the GUI:
 
-5. Open your browser at `http://localhost:3007`
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your Mist credentials:
+```
+MIST_API_TOKEN=your_api_token
+MIST_ORG_ID=your_org_id
+MIST_BASE_URL=https://api.mist.com/api/v1
+POLLING_INTERVAL_SECONDS=300
+TIMEZONE=Asia/Tokyo
+API_URL=http://localhost:8008
+```
+
+> **Note**: `.env` values are seeded into the database on first startup. After that, the GUI takes precedence. Use `docker compose down && docker compose up -d` (not `restart`) to reload `.env`.
+
+> **Note**: `API_URL` is the backend URL as seen from the browser:
+> - Local Mac: `http://localhost:8008`
+> - Remote server: `http://<SERVER_IP>:8008`
+
+## Settings (GUI)
+
+Open the Settings panel by clicking the **Settings** button in the top-right corner of the dashboard.
+
+### API Credentials
+
+| Field | Description |
+|-------|-------------|
+| API Token | Your Mist API token. Leave blank to keep the existing token. |
+| Org ID | Your Mist organization ID (UUID format). |
+| Region | Select the Mist region that matches your organization's location. |
+
+Changes take effect on the **next polling cycle** without requiring a restart.
+
+#### Finding Your Region
+
+The region can be identified from the URL in the Mist portal:
+
+| Portal URL | Region |
+|------------|--------|
+| `manage.mist.com` | Global 01 |
+| `manage.gc1.mist.com` | Global 02 (GC1) |
+| `manage.ac2.mist.com` | Global 03 / APAC (AC2) |
+| `manage.eu.mist.com` | EMEA 01 (EU) |
+
+For the full list of regions, refer to the official documentation:
+[Juniper Mist API Endpoint URLs and Global Regions](https://www.juniper.net/documentation/jp/ja/software/mist/automation-integration/topics/topic-map/api-endpoint-url-global-regions.html)
+
+### Other Settings
+
+| Setting | Description |
+|---------|-------------|
+| Polling Interval | How often to fetch data from the Mist API (30–3600 seconds) |
+| Log Auto-Save Interval | How often to auto-save CSV logs (1–1440 minutes) |
+| Log Retention Days | How long to keep CSV log files (1–365 days) |
+| Timezone | Timezone for all timestamps (e.g. `Asia/Tokyo`, `UTC`) |
+| Monitored Sites | Filter which sites to display and collect data for |
 
 ## 複数環境での設定
 
@@ -109,15 +149,13 @@ CORS_ORIGINS=http://localhost:3007,http://mist-dashboard.example.com:3007,https:
 To switch to a different Mist organization:
 
 ```bash
-# 1. Edit .env with new credentials
-# 2. (Optional) Remove old data for a clean start
-rm -rf data/
-# 3. Restart containers (required to reload .env)
-docker-compose down
-docker-compose up -d
+# 1. Use the GUI Settings page to update credentials (no restart needed)
+# OR edit .env and restart:
+docker compose down
+docker compose up -d
 ```
 
-> **Important**: `docker-compose restart` does NOT reload `.env`. Always use `down` + `up`.
+> **Important**: `docker compose restart` does NOT reload `.env`. Always use `down` + `up`.
 
 ## Ports
 
@@ -131,10 +169,18 @@ docker-compose up -d
 All data is stored in the `./data/` directory:
 ```
 data/
-├── mist.db          # SQLite database (metrics, settings)
+├── mist.db          # SQLite database (metrics, settings, credentials)
 ├── logs/            # Auto-saved CSV logs
 └── snapshots/       # Snapshot database files (max 2 slots)
 ```
+
+## Security Notes
+
+- `.env` is excluded from git via `.gitignore` — **do not commit it**
+- `data/` (SQLite database) is also excluded — **do not commit it**
+- **Never** write your API token or Org ID directly in code or README files
+- API tokens stored in the database are masked (`sk-t****`) in the GUI and API responses
+- Use environment-specific `.env` files (e.g. `.env.prod`) and keep them local
 
 ## Tech Stack
 

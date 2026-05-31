@@ -11,12 +11,40 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 from database import Base, SessionLocal, engine, migrate_db
-from models import AppSettings
-from routers import aps, floor_map, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots
+from models import AppSettings, Credentials
+from routers import aps, credentials, floor_map, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots
 from scheduler import poll_all_sites, save_hourly_logs, scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _init_credentials() -> None:
+    """起動時に credentials テーブルを初期化する。
+    - DB に値がなければ .env の値をシードする
+    - DB の値を os.environ に反映する（.env より DB を優先）
+    """
+    from routers.credentials import _apply_to_env
+
+    db = SessionLocal()
+    try:
+        cred = db.query(Credentials).first()
+        if cred is None:
+            token = os.getenv("MIST_API_TOKEN", "")
+            org_id = os.getenv("MIST_ORG_ID", "")
+            base_url = os.getenv("MIST_BASE_URL", "https://api.mist.com/api/v1")
+            cred = Credentials(id=1, mist_api_token=token, mist_org_id=org_id, mist_base_url=base_url)
+            db.add(cred)
+            db.commit()
+            db.refresh(cred)
+            logger.info("Credentials initialized from .env")
+        else:
+            _apply_to_env(cred)
+            logger.info("Credentials loaded from DB")
+    except Exception as e:
+        logger.warning(f"_init_credentials failed: {e}")
+    finally:
+        db.close()
 
 
 def _init_app_settings() -> None:
@@ -65,6 +93,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("/app/data/snapshots", exist_ok=True)
     migrate_db()
     Base.metadata.create_all(bind=engine)
+    _init_credentials()
     _init_app_settings()
     interval = int(os.getenv("POLLING_INTERVAL_SECONDS", "300"))
     scheduler.add_job(poll_all_sites, "interval", seconds=interval, id="poll_mist")
@@ -96,6 +125,7 @@ app.include_router(logs.router)
 app.include_router(snapshots.router)
 app.include_router(snapshot_db.router)
 app.include_router(settings.router)
+app.include_router(credentials.router)
 app.include_router(poll.router)
 
 

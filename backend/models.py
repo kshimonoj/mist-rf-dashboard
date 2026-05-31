@@ -108,3 +108,13 @@ class AppSettings(Base):
     last_log_saved_at = Column(DateTime, nullable=True)
     timezone = Column(String, default="Asia/Tokyo")
     monitored_site_ids = Column(Text, nullable=True)  # JSON array string
+
+
+class Credentials(Base):
+    __tablename__ = "credentials"
+
+    id = Column(Integer, primary_key=True)
+    mist_api_token = Column(Text, nullable=True)
+    mist_org_id = Column(Text, nullable=True)
+    mist_base_url = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

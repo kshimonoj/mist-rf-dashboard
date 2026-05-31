@@ -374,3 +374,31 @@ export async function updateSettings(
   }
   return res.json();
 }
+
+// ── Credentials ───────────────────────────────────────────────────────────────
+
+export interface CredentialsData {
+  mist_api_token: string;
+  mist_org_id: string;
+  mist_base_url: string;
+}
+
+export const fetchCredentials = () => apiFetch<CredentialsData>("/api/credentials");
+
+export async function updateCredentials(body: {
+  mist_api_token?: string;
+  mist_org_id?: string;
+  mist_base_url?: string;
+}): Promise<CredentialsData> {
+  const res = await fetch(`${API_BASE}/api/credentials`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail: string | undefined;
+    try { detail = (await res.json()).detail; } catch { /* ignore */ }
+    throw new Error(detail ?? `Credentials error ${res.status}`);
+  }
+  return res.json();
+}
