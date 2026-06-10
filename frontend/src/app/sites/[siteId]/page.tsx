@@ -154,7 +154,7 @@ export default function SitePage({ params }: { params: { siteId: string } }) {
           </Link>
           <div className="ml-1">
             <h1 className="font-display font-bold text-2xl" style={{ color: "var(--text-primary)" }}>
-              {siteName} — AP List
+              {siteName} — Site Detail
             </h1>
             <p className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{siteId}</p>
           </div>
@@ -178,7 +178,7 @@ export default function SitePage({ params }: { params: { siteId: string } }) {
       <div className="flex gap-1 mb-5 border-b" style={{ borderColor: "var(--chart-grid)" }}>
         {([
           { key: "aps", label: "AP List" },
-          { key: "clients", label: "Clients" },
+          { key: "clients", label: "Client List" },
         ] as const).map((t) => (
           <button
             key={t.key}

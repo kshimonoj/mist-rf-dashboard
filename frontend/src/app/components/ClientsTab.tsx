@@ -2,10 +2,10 @@
 
 import { ChevronUp, ChevronDown, ChevronsUpDown, Search } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import clsx from "clsx";
 import { fetchSiteClients, fetchSettings, ClientInfo } from "@/lib/api";
-import ClientDetailModal from "./ClientDetailModal";
 
 // ── Formatters ──────────────────────────────────────────────────────────────
 
@@ -120,6 +120,7 @@ const BAND_FILTERS = [
 // ── Component ───────────────────────────────────────────────────────────────
 
 export default function ClientsTab({ siteId }: { siteId: string }) {
+  const router = useRouter();
   const { data: settings } = useSWR("settings", fetchSettings);
   const refreshInterval = (settings?.client_polling_interval_seconds ?? 600) * 1000;
 
@@ -132,7 +133,6 @@ export default function ClientsTab({ siteId }: { siteId: string }) {
   const [search, setSearch] = useState("");
   const [bandFilter, setBandFilter] = useState<string>("all");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: "rssi", dir: "desc" });
-  const [selected, setSelected] = useState<ClientInfo | null>(null);
 
   const filtered = useMemo(() => {
     if (!clients) return [];
@@ -255,7 +255,7 @@ export default function ClientsTab({ siteId }: { siteId: string }) {
                   key={c.mac}
                   className="border-b transition-colors cursor-pointer"
                   style={{ borderColor: "var(--chart-grid)" }}
-                  onClick={() => setSelected(c)}
+                  onClick={() => router.push(`/sites/${siteId}/clients/${c.mac}`)}
                   onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--bg-hover)")}
                   onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "")}
                 >
@@ -297,7 +297,6 @@ export default function ClientsTab({ siteId }: { siteId: string }) {
         </div>
       )}
 
-      {selected && <ClientDetailModal client={selected} siteId={siteId} onClose={() => setSelected(null)} />}
     </div>
   );
 }
