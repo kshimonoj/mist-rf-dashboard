@@ -110,9 +110,48 @@ export interface SiteSummary {
   country_code: string;
 }
 
+export interface ClientInfo {
+  mac: string;
+  hostname?: string | null;
+  ip?: string | null;
+  manufacture?: string | null;
+  family?: string | null;
+  model?: string | null;
+  os?: string | null;
+  ap_id?: string | null;
+  ap_name?: string | null;
+  ap_mac?: string | null;
+  band?: string | null;
+  channel?: number | null;
+  proto?: string | null;
+  ssid?: string | null;
+  bssid?: string | null;
+  rssi?: number | null;
+  snr?: number | null;
+  idle_time?: number | null;
+  uptime?: number | null;
+  tx_rate?: number | null;
+  rx_rate?: number | null;
+  tx_bytes?: number | null;
+  rx_bytes?: number | null;
+  tx_pkts?: number | null;
+  rx_pkts?: number | null;
+  tx_retries?: number | null;
+  rx_retries?: number | null;
+  tx_bps?: number | null;
+  rx_bps?: number | null;
+  vlan_id?: string | number | null;
+  key_mgmt?: string | null;
+  dual_band?: boolean | null;
+  is_guest?: boolean | null;
+  [key: string]: unknown;
+}
+
 export const fetchSites = () => apiFetch<SiteInfo[]>("/api/sites");
 export const fetchSite = (siteId: string) => apiFetch<SiteSummary>(`/api/sites/${siteId}`);
 export const fetchSiteAps = (siteId: string) => apiFetch<ApInfo[]>(`/api/sites/${siteId}/aps`);
+export const fetchSiteClients = (siteId: string) =>
+  apiFetch<ClientInfo[]>(`/api/sites/${siteId}/clients`);
 export const fetchApMetrics = (apId: string, hours: number) =>
   apiFetch<ApMetric[]>(`/api/aps/${apId}/metrics?hours=${hours}`);
 export const fetchApRadioConfig = (apId: string, siteId?: string) =>
@@ -203,6 +242,7 @@ export interface Settings {
   log_retention_days: number;
   timezone: string;
   monitored_site_ids: string[];
+  client_polling_interval_seconds: number;
 }
 
 export interface SiteSimple {
@@ -360,7 +400,7 @@ export const getFloorMapImageUrl = (siteId: string, mapId: string) =>
   `${API_BASE}/api/floor-map/sites/${siteId}/maps/${mapId}/image`;
 
 export async function updateSettings(
-  body: Partial<Pick<Settings, "polling_interval_seconds" | "log_interval_minutes" | "log_retention_days" | "timezone" | "monitored_site_ids">>
+  body: Partial<Pick<Settings, "polling_interval_seconds" | "log_interval_minutes" | "log_retention_days" | "timezone" | "monitored_site_ids" | "client_polling_interval_seconds">>
 ): Promise<Settings> {
   const res = await fetch(`${API_BASE}/api/settings`, {
     method: "POST",

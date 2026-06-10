@@ -13,7 +13,8 @@ load_dotenv()
 from database import Base, SessionLocal, engine, migrate_db
 from models import AppSettings, Credentials
 from routers import aps, credentials, floor_map, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots
-from scheduler import poll_all_sites, save_hourly_logs, scheduler
+import scheduler as sched_module
+from scheduler import poll_all_sites, poll_clients, save_hourly_logs, scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -82,6 +83,15 @@ def _init_app_settings() -> None:
                 logger.info(f"Restored monitored_site_ids: {ids}")
             except Exception:
                 pass
+
+        client_interval = row.client_polling_interval_seconds
+        if client_interval is None:
+            client_interval = 600
+            row.client_polling_interval_seconds = client_interval
+            db.commit()
+        sched_module._client_polling_interval_seconds = client_interval
+        settings_module._current_client_polling = client_interval
+        logger.info(f"Client polling interval: {client_interval}s")
     except Exception as e:
         logger.warning(f"_init_app_settings failed: {e}")
     finally:
@@ -97,6 +107,8 @@ async def lifespan(app: FastAPI):
     _init_app_settings()
     interval = int(os.getenv("POLLING_INTERVAL_SECONDS", "300"))
     scheduler.add_job(poll_all_sites, "interval", seconds=interval, id="poll_mist")
+    client_interval = sched_module._client_polling_interval_seconds
+    scheduler.add_job(poll_clients, "interval", seconds=client_interval, id="poll_clients")
     scheduler.add_job(save_hourly_logs, "cron", minute=0, id="hourly_csv_log", misfire_grace_time=600)
     scheduler.start()
     yield

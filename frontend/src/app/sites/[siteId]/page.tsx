@@ -8,6 +8,7 @@ import { fetchSiteAps, fetchSite, ApInfo, SiteSummary } from "@/lib/api";
 import clsx from "clsx";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import SleSection from "@/app/components/SleSection";
+import ClientsTab from "@/app/components/ClientsTab";
 
 function formatUptime(seconds: number | null): string {
   if (!seconds) return "-";
@@ -88,6 +89,7 @@ const COLUMNS: ColDef[] = [
 
 export default function SitePage({ params }: { params: { siteId: string } }) {
   const { siteId } = params;
+  const [tab, setTab] = useState<"aps" | "clients">("aps");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({
     key: "name",
     dir: "asc",
@@ -172,13 +174,35 @@ export default function SitePage({ params }: { params: { siteId: string } }) {
 
       <SleSection mode="site" id={siteId} />
 
-      {isLoading && (
+      {/* Tabs */}
+      <div className="flex gap-1 mb-5 border-b" style={{ borderColor: "var(--chart-grid)" }}>
+        {([
+          { key: "aps", label: "AP List" },
+          { key: "clients", label: "Clients" },
+        ] as const).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className="px-4 py-2 text-sm font-mono -mb-px border-b-2 transition-all"
+            style={{
+              borderColor: tab === t.key ? "var(--cyan)" : "transparent",
+              color: tab === t.key ? "var(--cyan)" : "var(--text-muted)",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "clients" && <ClientsTab siteId={siteId} />}
+
+      {tab === "aps" && isLoading && (
         <div className="flex justify-center py-20">
           <div className="text-sm animate-pulse" style={{ color: "var(--cyan)" }}>Loading APs...</div>
         </div>
       )}
 
-      {!isLoading && aps && (
+      {tab === "aps" && !isLoading && aps && (
         <div className="overflow-x-auto">
           <table className="w-full text-sm font-mono border-collapse">
             <thead>

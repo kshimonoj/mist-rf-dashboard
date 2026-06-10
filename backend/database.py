@@ -69,6 +69,11 @@ def migrate_db():
                 ("monitored_site_ids", "TEXT"),
             ])
 
+            # app_settings: client_polling_interval_seconds カラム追加
+            _add_columns(conn, "app_settings", [
+                ("client_polling_interval_seconds", "INTEGER"),
+            ])
+
             # radio_config_current: 旧列名 → 新列名へリネーム（先に実行）
             _rename_columns(conn, "radio_config_current", [
                 ("device_profile_id", "deviceprofile_id"),

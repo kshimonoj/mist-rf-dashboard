@@ -15,8 +15,8 @@ import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 
 type TriggerFilter = "all" | "manual" | "auto";
-type TypeFilter = "all" | "ap_metrics" | "floormap" | "sle_metrics";
-type FileType = "ap_metrics" | "floormap" | "sle_metrics";
+type TypeFilter = "all" | "ap_metrics" | "floormap" | "sle_metrics" | "client_metrics";
+type FileType = "ap_metrics" | "floormap" | "sle_metrics" | "client_metrics";
 type Tab = "snapshots" | "csv-logs";
 
 interface UnifiedLogRow {
@@ -70,6 +70,16 @@ function TypeBadge({ fileType }: { fileType: FileType }) {
         style={{ borderColor: "var(--green)", color: "var(--green)", backgroundColor: "rgba(0,255,128,0.08)" }}
       >
         SLE Metrics
+      </span>
+    );
+  }
+  if (fileType === "client_metrics") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-mono"
+        style={{ borderColor: "var(--cyan)", color: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }}
+      >
+        Clients
       </span>
     );
   }
@@ -206,8 +216,15 @@ function CsvLogsTab() {
       const snap = snapIndex[f.filename];
       const isFloormap = f.filename.startsWith("floormap_");
       const isSleMetrics = f.filename.startsWith("sle_metrics_");
+      const isClientMetrics = f.filename.startsWith("client_metrics_");
       const isManual = f.filename.includes("_manual");
-      const fileType: FileType = isFloormap ? "floormap" : isSleMetrics ? "sle_metrics" : "ap_metrics";
+      const fileType: FileType = isFloormap
+        ? "floormap"
+        : isSleMetrics
+        ? "sle_metrics"
+        : isClientMetrics
+        ? "client_metrics"
+        : "ap_metrics";
       return {
         filename: f.filename,
         fileType,
@@ -283,6 +300,7 @@ function CsvLogsTab() {
             <option value="ap_metrics">AP Metrics</option>
             <option value="floormap">Floor Map</option>
             <option value="sle_metrics">SLE Metrics</option>
+            <option value="client_metrics">Clients</option>
           </select>
         </div>
         <div>
@@ -298,7 +316,7 @@ function CsvLogsTab() {
             <option value="auto">Auto</option>
           </select>
         </div>
-        {typeFilter !== "floormap" && typeFilter !== "sle_metrics" && (
+        {typeFilter !== "floormap" && typeFilter !== "sle_metrics" && typeFilter !== "client_metrics" && (
           <>
             <div>
               <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Site Filter</label>

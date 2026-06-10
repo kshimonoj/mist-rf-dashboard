@@ -52,6 +52,9 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const [pollInterval, setPollInterval] = useState<number | "">(data?.polling_interval_seconds ?? "");
   const [logInterval, setLogInterval] = useState<number | "">(data?.log_interval_minutes ?? "");
   const [retentionDays, setRetentionDays] = useState<number | "">(data?.log_retention_days ?? "");
+  const [clientPollMinutes, setClientPollMinutes] = useState<number | "">(
+    data ? Math.round(data.client_polling_interval_seconds / 60) : ""
+  );
   const [timezone, setTimezone] = useState<string>(data?.timezone ?? "");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [siteSearch, setSiteSearch] = useState("");
@@ -88,6 +91,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
       if (pollInterval === "") setPollInterval(data.polling_interval_seconds);
       if (logInterval === "") setLogInterval(data.log_interval_minutes);
       if (retentionDays === "") setRetentionDays(data.log_retention_days);
+      if (clientPollMinutes === "") setClientPollMinutes(Math.round(data.client_polling_interval_seconds / 60));
       if (timezone === "") setTimezone(data.timezone ?? "Asia/Tokyo");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -108,8 +112,9 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const pollValid = pollInterval !== "" && Number(pollInterval) >= 30 && Number(pollInterval) <= 3600;
   const logValid = logInterval !== "" && Number(logInterval) >= 1 && Number(logInterval) <= 1440;
   const retentionValid = retentionDays !== "" && Number(retentionDays) >= 1 && Number(retentionDays) <= 365;
+  const clientPollValid = clientPollMinutes !== "" && Number(clientPollMinutes) >= 5;
   const tzValid = timezone.trim().length > 0;
-  const canApply = pollValid && logValid && retentionValid && tzValid;
+  const canApply = pollValid && logValid && retentionValid && clientPollValid && tzValid;
 
   const filteredSites = allSites?.filter((s) => {
     const q = siteSearch.toLowerCase();
@@ -159,6 +164,12 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
 
   const handleApply = async () => {
     if (!canApply) return;
+    const clientPollSeconds = Number(clientPollMinutes) * 60;
+    if (clientPollSeconds < 300) {
+      setToast({ msg: "Client Polling Interval は最小5分です", ok: false });
+      setTimeout(() => setToast(null), 5000);
+      return;
+    }
     setSaving(true);
     try {
       // 全選択 or 全未選択 → [] (全サイト対象)
@@ -168,6 +179,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
         polling_interval_seconds: Number(pollInterval),
         log_interval_minutes: Number(logInterval),
         log_retention_days: Number(retentionDays),
+        client_polling_interval_seconds: clientPollSeconds,
         timezone: timezone.trim(),
         monitored_site_ids: monitoredIds,
       });
@@ -415,6 +427,30 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
             {data && (
               <p className="text-xs mt-1 font-mono" style={{ color: "var(--text-muted)" }}>
                 現在: {data.log_retention_days} 日 / 上限 500 MB
+              </p>
+            )}
+          </div>
+
+          {/* Client Polling Interval */}
+          <div>
+            <label className="block text-sm font-mono mb-2" style={{ color: "var(--text-secondary)" }}>
+              Client Polling Interval
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                min={5}
+                value={clientPollMinutes}
+                onChange={(e) => setClientPollMinutes(e.target.value === "" ? "" : Number(e.target.value))}
+                placeholder={String(data ? Math.round(data.client_polling_interval_seconds / 60) : 10)}
+                className="w-28 px-3 py-2 rounded border bg-transparent text-sm font-mono"
+                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
+              />
+              <span className="text-sm" style={{ color: "var(--text-muted)" }}>分（最小5）</span>
+            </div>
+            {data && (
+              <p className="text-xs mt-1 font-mono" style={{ color: "var(--text-muted)" }}>
+                現在: {Math.round(data.client_polling_interval_seconds / 60)} 分（{data.client_polling_interval_seconds} 秒）
               </p>
             )}
           </div>

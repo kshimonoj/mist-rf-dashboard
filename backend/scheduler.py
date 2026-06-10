@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 from mist.client import MistClient, SLE_METRICS, parse_sle_metric
-from models import AppSettings, ApMetrics, RadioConfigChange, RadioConfigCurrent, Snapshot
+from models import AppSettings, ApMetrics, ClientMetrics, RadioConfigChange, RadioConfigCurrent, Snapshot
 from radio_helpers import detect_band_source, overall_source
 from utils import fmt_dt, fmt_dt_tz
 
@@ -20,7 +20,9 @@ _log_interval_minutes: int = 60
 _log_retention_days: int = 30
 _app_timezone: str = "Asia/Tokyo"
 _monitored_site_ids: list[str] = []
+_client_polling_interval_seconds: int = 600
 last_log_saved_at: datetime = datetime.now(timezone.utc)
+last_client_log_saved_at: datetime = datetime.now(timezone.utc)
 
 
 def _persist_last_log_saved_at(dt: datetime) -> None:
@@ -71,6 +73,31 @@ ALL_CSV_COLUMNS = [
     "radio_6_utilization", "radio_6_util_tx", "radio_6_util_rx_in_bss", "radio_6_util_non_wifi",
     "radio_6_noise_floor",
 ]
+
+
+CLIENT_FIELDS = [
+    "mac", "hostname", "ip", "manufacture", "family", "model", "os",
+    "band", "channel", "proto", "ssid", "bssid", "rssi", "snr",
+    "idle_time", "uptime", "tx_rate", "rx_rate", "tx_bytes", "rx_bytes",
+    "tx_pkts", "rx_pkts", "tx_retries", "rx_retries", "tx_bps", "rx_bps",
+    "vlan_id", "key_mgmt", "dual_band", "is_guest",
+]
+
+CLIENT_CSV_COLUMNS = [
+    "timestamp", "site_id", "site_name", "ap_id", "ap_name", "ap_mac",
+    *CLIENT_FIELDS,
+]
+
+
+def _extract_client_fields(client: dict) -> dict:
+    """Mist client レコードから ClientMetrics 用のフィールドを抽出する。"""
+    out: dict = {}
+    for key in CLIENT_FIELDS:
+        out[key] = client.get(key)
+    # vlan_id は数値で返ることがあるため文字列化
+    if out.get("vlan_id") is not None:
+        out["vlan_id"] = str(out["vlan_id"])
+    return out
 
 
 def _extract_radio_stats(device: dict, band_key: str) -> dict:
@@ -369,6 +396,68 @@ async def poll_all_sites():
     logger.info("Polling complete.")
 
 
+async def poll_clients():
+    """全監視対象サイトの無線クライアント一覧を取得し client_metrics へ保存する。
+    AP metrics のポーリングとは完全に分離した別 job。"""
+    logger.info("Starting client polling...")
+    client = MistClient()
+    org_id = os.getenv("MIST_ORG_ID", "")
+    now = datetime.now(timezone.utc)
+
+    sites = await client.get_sites(org_id)
+    if not sites:
+        logger.warning("[CLIENT POLL] No sites returned from Mist API")
+        return
+
+    if _monitored_site_ids:
+        sites = [s for s in sites if s.get("id") in _monitored_site_ids]
+        if not sites:
+            logger.warning("[CLIENT POLL] No sites match monitored_site_ids filter")
+            return
+
+    semaphore = asyncio.Semaphore(5)
+
+    async def poll_site(site: dict):
+        async with semaphore:
+            site_id = site.get("id", "")
+            site_name = site.get("name", "")
+            # ap_mac -> ap_name / ap_id 解決用のキャッシュを devices stats から構築
+            devices, clients = await asyncio.gather(
+                client.get_site_devices_stats(site_id),
+                client.get_site_clients(site_id),
+            )
+            ap_by_mac: dict = {
+                (d.get("mac") or "").lower(): {"id": d.get("id", ""), "name": d.get("name", "")}
+                for d in devices
+            }
+            logger.info(f"[CLIENT POLL] site {site_name}: {len(clients)} clients")
+
+            db: Session = SessionLocal()
+            try:
+                for c in clients:
+                    ap_mac = (c.get("ap_mac") or "").lower()
+                    ap_info = ap_by_mac.get(ap_mac, {})
+                    fields = _extract_client_fields(c)
+                    db.add(ClientMetrics(
+                        timestamp=now,
+                        site_id=site_id,
+                        site_name=site_name,
+                        ap_id=c.get("ap_id") or ap_info.get("id"),
+                        ap_name=ap_info.get("name"),
+                        ap_mac=c.get("ap_mac"),
+                        **fields,
+                    ))
+                db.commit()
+            except Exception as e:
+                logger.error(f"[CLIENT POLL] DB error for site {site_id}: {e}")
+                db.rollback()
+            finally:
+                db.close()
+
+    await asyncio.gather(*[poll_site(s) for s in sites])
+    logger.info("Client polling complete.")
+
+
 async def save_floormap_log(
     now: datetime,
     tz_obj,
@@ -566,6 +655,51 @@ async def save_sle_log(now: datetime, tz_obj, tz_abbr: str) -> None:
     logger.info(f"[SLE SAVE] Saved: {filepath} ({len(rows)} records)")
 
 
+async def save_client_log(now: datetime, tz_obj, tz_abbr: str) -> None:
+    """前回保存以降の client_metrics 全件を CSV に書き出す（期間ログ方式）。"""
+    global last_client_log_saved_at
+    since = last_client_log_saved_at
+    now_local = now.astimezone(tz_obj)
+
+    db: Session = SessionLocal()
+    try:
+        rows = (
+            db.query(ClientMetrics)
+            .filter(ClientMetrics.timestamp >= since)
+            .order_by(ClientMetrics.site_id, ClientMetrics.ap_id, ClientMetrics.timestamp)
+            .all()
+        )
+        if not rows:
+            logger.info("[CLIENT SAVE] No new client metrics since last save, skipping CSV write.")
+        else:
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            filename = f"client_metrics_{now_local.strftime('%Y%m%d_%H%M')}_{tz_abbr}.csv"
+            filepath = os.path.join(LOGS_DIR, filename)
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=CLIENT_CSV_COLUMNS, extrasaction="ignore")
+                writer.writeheader()
+                for r in rows:
+                    row = {
+                        "timestamp": fmt_dt_tz(r.timestamp, _app_timezone),
+                        "site_id": r.site_id,
+                        "site_name": r.site_name or "",
+                        "ap_id": r.ap_id or "",
+                        "ap_name": r.ap_name or "",
+                        "ap_mac": r.ap_mac or "",
+                    }
+                    for field in CLIENT_FIELDS:
+                        row[field] = getattr(r, field)
+                    writer.writerow(row)
+            logger.info(f"[CLIENT SAVE] Saved: {filepath} ({len(rows)} records)")
+
+        last_client_log_saved_at = now
+    except Exception as e:
+        logger.error(f"[CLIENT SAVE] Failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 async def save_hourly_logs():
     """前回保存以降の ap_metrics 全件を CSV に書き出す（期間ログ方式）。"""
     global last_log_saved_at
@@ -666,5 +800,10 @@ async def save_hourly_logs():
         await save_sle_log(now, tz_obj, tz_abbr)
     except Exception as e:
         logger.error(f"[SLE SAVE] Auto save failed: {e}")
+
+    try:
+        await save_client_log(now, tz_obj, tz_abbr)
+    except Exception as e:
+        logger.error(f"[CLIENT SAVE] Auto save failed: {e}")
 
     rotate_logs(_log_retention_days)

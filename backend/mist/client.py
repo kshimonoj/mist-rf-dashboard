@@ -200,11 +200,13 @@ class MistClient:
         )
         return result if isinstance(result, dict) else {}
 
-    async def get_site_clients(self, site_id: str, ap_id: Optional[str] = None) -> list[dict]:
-        params: dict = {"limit": 1000}
-        if ap_id:
-            params["ap_id"] = ap_id
-        result = await self._get(f"/sites/{site_id}/stats/clients", params=params)
+    async def get_site_clients(self, site_id: str) -> list[dict]:
+        """GET /sites/{site_id}/stats/clients?wired=false で無線クライアント一覧を取得する。
+        全件一括返却APIのため limit/page は不要。"""
+        result = await self._get(
+            f"/sites/{site_id}/stats/clients",
+            params={"wired": "false"},
+        )
         if isinstance(result, list):
             return result
         if isinstance(result, dict) and "results" in result:

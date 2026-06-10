@@ -19,6 +19,9 @@ _current_log_minutes: int = 60
 _current_retention_days: int = 30
 _current_timezone: str = "Asia/Tokyo"
 _monitored_site_ids: list[str] = []
+_current_client_polling: int = 600
+
+MIN_CLIENT_POLLING = 300
 
 
 class SettingsUpdate(BaseModel):
@@ -27,6 +30,7 @@ class SettingsUpdate(BaseModel):
     log_retention_days: Optional[int] = Field(None, ge=1, le=365)
     timezone: Optional[str] = None
     monitored_site_ids: Optional[list[str]] = None
+    client_polling_interval_seconds: Optional[int] = None
 
 
 @router.get("/api/settings")
@@ -37,12 +41,29 @@ async def get_settings() -> dict[str, Any]:
         "log_retention_days": _current_retention_days,
         "timezone": _current_timezone,
         "monitored_site_ids": _monitored_site_ids,
+        "client_polling_interval_seconds": _current_client_polling,
     }
 
 
 @router.post("/api/settings")
 async def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)) -> dict[str, Any]:
-    global _current_polling, _current_log_minutes, _current_retention_days, _current_timezone, _monitored_site_ids
+    global _current_polling, _current_log_minutes, _current_retention_days, _current_timezone, _monitored_site_ids, _current_client_polling
+
+    if body.client_polling_interval_seconds is not None:
+        if body.client_polling_interval_seconds < MIN_CLIENT_POLLING:
+            raise HTTPException(status_code=400, detail="クライアントポーリング間隔は最小5分（300秒）です")
+        try:
+            scheduler.reschedule_job(
+                "poll_clients", trigger="interval", seconds=body.client_polling_interval_seconds
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Reschedule poll_clients failed: {e}")
+        _current_client_polling = body.client_polling_interval_seconds
+        sched_module._client_polling_interval_seconds = body.client_polling_interval_seconds
+        row = db.query(AppSettings).first()
+        if row:
+            row.client_polling_interval_seconds = body.client_polling_interval_seconds
+            db.commit()
 
     if body.polling_interval_seconds is not None:
         try:
@@ -87,4 +108,5 @@ async def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)) -
         "log_retention_days": _current_retention_days,
         "timezone": _current_timezone,
         "monitored_site_ids": _monitored_site_ids,
+        "client_polling_interval_seconds": _current_client_polling,
     }

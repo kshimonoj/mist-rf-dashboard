@@ -67,6 +67,27 @@ async def get_site(site_id: str) -> dict[str, Any]:
     }
 
 
+@router.get("/api/sites/{site_id}/clients")
+async def get_site_clients(site_id: str) -> list[dict[str, Any]]:
+    """現在の無線クライアント一覧をリアルタイムで返す。
+    Mist API のレスポンスをそのまま返しつつ ap_name を補完する。"""
+    client = MistClient()
+    devices, clients = await asyncio.gather(
+        client.get_site_devices_stats(site_id),
+        client.get_site_clients(site_id),
+    )
+    ap_by_mac = {
+        (d.get("mac") or "").lower(): {"id": d.get("id", ""), "name": d.get("name", "")}
+        for d in devices
+    }
+    for c in clients:
+        ap_info = ap_by_mac.get((c.get("ap_mac") or "").lower(), {})
+        c["ap_name"] = ap_info.get("name", "")
+        if not c.get("ap_id"):
+            c["ap_id"] = ap_info.get("id", "")
+    return clients
+
+
 @router.get("/api/sites/{site_id}/aps")
 async def get_site_aps(site_id: str) -> list[dict[str, Any]]:
     client = MistClient()

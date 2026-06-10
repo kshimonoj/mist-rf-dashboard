@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text
+from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, Text
 from sqlalchemy.sql import func
 from database import Base
 
@@ -42,6 +42,48 @@ class ApMetrics(Base):
     radio_6_noise_floor = Column(Float, nullable=True)
     radio_6_tx_power = Column(Float, nullable=True)
     status = Column(String, default="connected")
+
+
+class ClientMetrics(Base):
+    __tablename__ = "client_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=func.now(), index=True)
+    site_id = Column(String, index=True)
+    site_name = Column(String, nullable=True)
+    ap_id = Column(String, nullable=True)
+    ap_name = Column(String, nullable=True)
+    ap_mac = Column(String, nullable=True)
+    mac = Column(String, index=True)
+    hostname = Column(String, nullable=True)
+    ip = Column(String, nullable=True)
+    manufacture = Column(String, nullable=True)
+    family = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    os = Column(String, nullable=True)
+    band = Column(String, nullable=True)
+    channel = Column(Integer, nullable=True)
+    proto = Column(String, nullable=True)
+    ssid = Column(String, nullable=True)
+    bssid = Column(String, nullable=True)
+    rssi = Column(Float, nullable=True)
+    snr = Column(Float, nullable=True)
+    idle_time = Column(Float, nullable=True)
+    uptime = Column(Integer, nullable=True)
+    tx_rate = Column(Float, nullable=True)
+    rx_rate = Column(Float, nullable=True)
+    tx_bytes = Column(Integer, nullable=True)
+    rx_bytes = Column(Integer, nullable=True)
+    tx_pkts = Column(Integer, nullable=True)
+    rx_pkts = Column(Integer, nullable=True)
+    tx_retries = Column(Integer, nullable=True)
+    rx_retries = Column(Integer, nullable=True)
+    tx_bps = Column(Integer, nullable=True)
+    rx_bps = Column(Integer, nullable=True)
+    vlan_id = Column(String, nullable=True)
+    key_mgmt = Column(String, nullable=True)
+    dual_band = Column(Boolean, nullable=True)
+    is_guest = Column(Boolean, nullable=True)
 
 
 class RadioConfigChange(Base):
@@ -108,6 +150,7 @@ class AppSettings(Base):
     last_log_saved_at = Column(DateTime, nullable=True)
     timezone = Column(String, default="Asia/Tokyo")
     monitored_site_ids = Column(Text, nullable=True)  # JSON array string
+    client_polling_interval_seconds = Column(Integer, default=600)
 
 
 class Credentials(Base):
