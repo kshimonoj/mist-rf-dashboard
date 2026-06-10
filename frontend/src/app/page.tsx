@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCw, Wifi, WifiOff, Activity, History, Map } from "lucide-react";
+import { RefreshCw, Wifi, WifiOff, Activity, History, Map, Tag as TagIcon } from "lucide-react";
 import Link from "next/link";
 import { useRef, useState } from "react";
 import useSWR from "swr";
@@ -123,6 +123,14 @@ export default function HomePage() {
           <SaveNowButton getFloorMapRows={() => floorMapRef.current?.getRows() ?? null} />
           <SnapshotButton />
           <SettingsButton />
+          <Link
+            href="/tags"
+            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
+            style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
+          >
+            <TagIcon className="w-4 h-4" />
+            Tags
+          </Link>
           <Link
             href="/history"
             className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"

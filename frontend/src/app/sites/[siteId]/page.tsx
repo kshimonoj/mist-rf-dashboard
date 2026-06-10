@@ -4,11 +4,12 @@ import { ArrowLeft, Home, RefreshCw, ChevronUp, ChevronDown, ChevronsUpDown } fr
 import Link from "next/link";
 import useSWR from "swr";
 import { useState, useMemo } from "react";
-import { fetchSiteAps, fetchSite, ApInfo, SiteSummary } from "@/lib/api";
+import { fetchSiteAps, fetchSite, fetchApTags, putApTag, ApInfo, SiteSummary, ApTagEntry } from "@/lib/api";
 import clsx from "clsx";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import SleSection from "@/app/components/SleSection";
 import ClientsTab from "@/app/components/ClientsTab";
+import TagCell from "@/app/components/TagCell";
 
 function formatUptime(seconds: number | null): string {
   if (!seconds) return "-";
@@ -83,6 +84,7 @@ const COLUMNS: ColDef[] = [
   { label: "5G Util%",    sortKey: "radio_5_utilization" },
   { label: "6G Ch",       sortKey: "radio_6_channel" },
   { label: "6G Util%",    sortKey: "radio_6_utilization" },
+  { label: "Tags",        sortKey: null },
 ];
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -104,6 +106,13 @@ export default function SitePage({ params }: { params: { siteId: string } }) {
     `site-${siteId}`,
     () => fetchSite(siteId),
   );
+  const { data: apTags, mutate: mutateApTags } = useSWR<ApTagEntry[]>("ap-tags", fetchApTags);
+
+  const apTagMap = useMemo(() => {
+    const m: Record<string, string[]> = {};
+    (apTags ?? []).forEach((t) => { m[t.ap_id] = t.tags; });
+    return m;
+  }, [apTags]);
 
   const siteName = site?.name || siteId;
 
@@ -269,6 +278,12 @@ export default function SitePage({ params }: { params: { siteId: string } }) {
                   <td className="py-3 px-3"><RadioCell val={ap.radio_5?.utilization} unit="%" /></td>
                   <td className="py-3 px-3"><RadioCell val={ap.radio_6?.channel} /></td>
                   <td className="py-3 px-3"><RadioCell val={ap.radio_6?.utilization} unit="%" /></td>
+                  <td className="py-2 px-3">
+                    <TagCell
+                      tags={apTagMap[ap.id] ?? []}
+                      onSave={async (tagsStr) => { await putApTag(ap.id, tagsStr); await mutateApTags(); }}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>

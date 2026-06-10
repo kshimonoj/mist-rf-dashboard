@@ -5,7 +5,12 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import clsx from "clsx";
-import { fetchSiteClients, fetchSettings, ClientInfo } from "@/lib/api";
+import { fetchSiteClients, fetchSettings, fetchClientTags, putClientTag, ClientInfo, ClientTagEntry } from "@/lib/api";
+import TagCell from "./TagCell";
+
+function normMac(mac: string | null | undefined): string {
+  return (mac || "").replace(/[:-]/g, "").toLowerCase();
+}
 
 // ── Formatters ──────────────────────────────────────────────────────────────
 
@@ -108,6 +113,7 @@ const COLUMNS: ColDef[] = [
   { label: "SSID",           sortKey: "ssid" },
   { label: "VLAN",           sortKey: "vlan_id" },
   { label: "Auth",           sortKey: "key_mgmt" },
+  { label: "Tags",           sortKey: null },
 ];
 
 const BAND_FILTERS = [
@@ -129,6 +135,13 @@ export default function ClientsTab({ siteId }: { siteId: string }) {
     () => fetchSiteClients(siteId),
     { refreshInterval }
   );
+  const { data: clientTags, mutate: mutateClientTags } = useSWR<ClientTagEntry[]>("client-tags", fetchClientTags);
+
+  const clientTagMap = useMemo(() => {
+    const m: Record<string, string[]> = {};
+    (clientTags ?? []).forEach((t) => { m[t.mac] = t.tags; });
+    return m;
+  }, [clientTags]);
 
   const [search, setSearch] = useState("");
   const [bandFilter, setBandFilter] = useState<string>("all");
@@ -285,6 +298,12 @@ export default function ClientsTab({ siteId }: { siteId: string }) {
                   <td className="py-2 px-3" style={{ color: "var(--text-secondary)" }}>{c.ssid || "-"}</td>
                   <td className="py-2 px-3" style={{ color: "var(--text-secondary)" }}>{num(c.vlan_id)}</td>
                   <td className="py-2 px-3" style={{ color: "var(--text-secondary)" }}>{c.key_mgmt || "-"}</td>
+                  <td className="py-2 px-3">
+                    <TagCell
+                      tags={clientTagMap[normMac(c.mac)] ?? []}
+                      onSave={async (tagsStr) => { await putClientTag(c.mac, tagsStr); await mutateClientTags(); }}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>

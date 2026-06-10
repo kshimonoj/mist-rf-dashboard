@@ -12,7 +12,7 @@ load_dotenv()
 
 from database import Base, SessionLocal, engine, migrate_db
 from models import AppSettings, Credentials
-from routers import aps, clients, credentials, floor_map, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots
+from routers import aps, clients, credentials, floor_map, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots, tags
 import scheduler as sched_module
 from scheduler import poll_all_sites, poll_clients, save_hourly_logs, scheduler
 
@@ -131,6 +131,7 @@ app.add_middleware(
 app.include_router(sites.router)
 app.include_router(aps.router)
 app.include_router(clients.router)
+app.include_router(tags.router)
 app.include_router(sle.router)
 app.include_router(floor_map.router)
 app.include_router(radio.router)

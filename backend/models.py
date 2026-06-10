@@ -86,6 +86,24 @@ class ClientMetrics(Base):
     is_guest = Column(Boolean, nullable=True)
 
 
+class ApTag(Base):
+    __tablename__ = "ap_tags"
+
+    ap_id = Column(String, primary_key=True)
+    site_id = Column(String, nullable=True)
+    ap_name = Column(String, nullable=True)
+    tags = Column(Text, nullable=True)  # カンマ区切り文字列 e.g. "APTest,Down"
+
+
+class ClientTag(Base):
+    __tablename__ = "client_tags"
+
+    mac = Column(String, primary_key=True)  # コロンなし小文字
+    site_id = Column(String, nullable=True)
+    hostname = Column(String, nullable=True)
+    tags = Column(Text, nullable=True)  # カンマ区切り文字列
+
+
 class RadioConfigChange(Base):
     __tablename__ = "radio_config_changes"
 

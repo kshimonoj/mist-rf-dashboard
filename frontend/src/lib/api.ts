@@ -461,6 +461,50 @@ export async function updateSettings(
   return res.json();
 }
 
+// ── Tags ───────────────────────────────────────────────────────────────────────
+
+export interface ApTagEntry {
+  ap_id: string;
+  site_id: string | null;
+  ap_name: string | null;
+  tags: string[];
+}
+
+export interface ClientTagEntry {
+  mac: string;
+  site_id: string | null;
+  hostname: string | null;
+  tags: string[];
+}
+
+export const fetchApTags = () => apiFetch<ApTagEntry[]>("/api/tags/aps");
+export const fetchClientTags = () => apiFetch<ClientTagEntry[]>("/api/tags/clients");
+export const fetchAllTags = () => apiFetch<string[]>("/api/tags");
+export const fetchTagAps = (tag: string) =>
+  apiFetch<ApInfo[]>(`/api/tags/${encodeURIComponent(tag)}/aps`);
+export const fetchTagClients = (tag: string) =>
+  apiFetch<ClientInfo[]>(`/api/tags/${encodeURIComponent(tag)}/clients`);
+
+export async function putApTag(apId: string, tags: string): Promise<{ tags: string[] }> {
+  const res = await fetch(`${API_BASE}/api/tags/aps/${apId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags }),
+  });
+  if (!res.ok) throw new Error(`Tag save error ${res.status}`);
+  return res.json();
+}
+
+export async function putClientTag(mac: string, tags: string): Promise<{ tags: string[] }> {
+  const res = await fetch(`${API_BASE}/api/tags/clients/${mac}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags }),
+  });
+  if (!res.ok) throw new Error(`Tag save error ${res.status}`);
+  return res.json();
+}
+
 // ── Credentials ───────────────────────────────────────────────────────────────
 
 export interface CredentialsData {
