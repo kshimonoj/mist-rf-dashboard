@@ -5,9 +5,10 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import {
-  fetchSnapshots, fetchLogs, fetchSites, fetchSiteAps, fetchSnapshotDbs,
-  getSnapshotDownloadUrl, getSnapshotDbDownloadUrl, getLogDownloadUrl, getLogsZipUrl, deleteLogs,
-  SnapshotInfo, LogFileInfo, SiteInfo, ApInfo, SnapshotDbMeta,
+  fetchSnapshots, fetchLogs, fetchSites, fetchSiteAps, fetchSnapshotDbs, fetchClientList,
+  getSnapshotDownloadUrl, getSnapshotDbDownloadUrl, getLogDownloadUrl, getLogFilteredDownloadUrl,
+  getLogsZipUrl, deleteLogs,
+  SnapshotInfo, LogFileInfo, SiteInfo, ApInfo, SnapshotDbMeta, ClientListItem,
 } from "@/lib/api";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import SaveNowButton from "@/app/components/SaveNowButton";
@@ -79,7 +80,7 @@ function TypeBadge({ fileType }: { fileType: FileType }) {
         className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-mono"
         style={{ borderColor: "var(--cyan)", color: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }}
       >
-        Clients
+        Client Metrics
       </span>
     );
   }
@@ -188,6 +189,8 @@ function CsvLogsTab() {
   const { timezone } = useTimezone();
   const [selectedSiteId, setSelectedSiteId] = useState<string>("");
   const [selectedApId, setSelectedApId] = useState<string>("");
+  const [selectedApMac, setSelectedApMac] = useState<string>("");
+  const [selectedClientMac, setSelectedClientMac] = useState<string>("");
   const [triggerFilter, setTriggerFilter] = useState<TriggerFilter>("all");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -201,6 +204,13 @@ function CsvLogsTab() {
   const { data: aps } = useSWR<ApInfo[]>(
     selectedSiteId ? `site-aps-${selectedSiteId}` : null,
     () => fetchSiteAps(selectedSiteId),
+  );
+  // Client Filter 用: client_metrics 選択時のみ、選択中の Site/AP に接続したクライアント一覧を取得
+  const { data: clientList } = useSWR<ClientListItem[]>(
+    typeFilter === "client_metrics"
+      ? `client-list-${selectedSiteId}-${selectedApMac}`
+      : null,
+    () => fetchClientList(selectedSiteId || undefined, selectedApMac || undefined),
   );
 
   // ap_metrics のメタデータをファイル名でインデックス化
@@ -243,7 +253,18 @@ function CsvLogsTab() {
     return true;
   });
 
-  const hasFilter = selectedSiteId || selectedApId || triggerFilter !== "all" || typeFilter !== "all";
+  const hasFilter =
+    selectedSiteId || selectedApId || selectedApMac || selectedClientMac ||
+    triggerFilter !== "all" || typeFilter !== "all";
+
+  const clearFilters = () => {
+    setSelectedSiteId("");
+    setSelectedApId("");
+    setSelectedApMac("");
+    setSelectedClientMac("");
+    setTriggerFilter("all");
+    setTypeFilter("all");
+  };
   const totalBytes = logData?.total_bytes ?? 0;
   const allSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.filename));
   const someSelected = selected.size > 0;
@@ -300,7 +321,7 @@ function CsvLogsTab() {
             <option value="ap_metrics">AP Metrics</option>
             <option value="floormap">Floor Map</option>
             <option value="sle_metrics">SLE Metrics</option>
-            <option value="client_metrics">Clients</option>
+            <option value="client_metrics">Client Metrics</option>
           </select>
         </div>
         <div>
@@ -349,9 +370,56 @@ function CsvLogsTab() {
             </div>
           </>
         )}
+        {typeFilter === "client_metrics" && (
+          <>
+            <div>
+              <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Site Filter</label>
+              <select
+                value={selectedSiteId}
+                onChange={(e) => { setSelectedSiteId(e.target.value); setSelectedApMac(""); setSelectedClientMac(""); }}
+                className="text-sm font-mono px-3 py-1.5 rounded border bg-transparent"
+                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
+              >
+                <option value="">All Sites</option>
+                {sites?.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>AP Filter</label>
+              <select
+                value={selectedApMac}
+                onChange={(e) => { setSelectedApMac(e.target.value); setSelectedClientMac(""); }}
+                disabled={!selectedSiteId}
+                className="text-sm font-mono px-3 py-1.5 rounded border bg-transparent disabled:opacity-40"
+                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
+              >
+                <option value="">All APs</option>
+                {aps?.map((ap) => (
+                  <option key={ap.id} value={ap.mac}>{ap.name || ap.mac}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Client Filter</label>
+              <select
+                value={selectedClientMac}
+                onChange={(e) => setSelectedClientMac(e.target.value)}
+                className="text-sm font-mono px-3 py-1.5 rounded border bg-transparent"
+                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
+              >
+                <option value="">All Clients</option>
+                {clientList?.map((c) => (
+                  <option key={c.mac} value={c.mac}>{c.hostname || c.mac}</option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
         {hasFilter && (
           <button
-            onClick={() => { setSelectedSiteId(""); setSelectedApId(""); setTriggerFilter("all"); setTypeFilter("all"); }}
+            onClick={clearFilters}
             className="text-xs px-3 py-1.5 border rounded"
             style={{ borderColor: "var(--chart-grid)", color: "var(--text-muted)" }}
           >
@@ -480,6 +548,20 @@ function CsvLogsTab() {
                       >
                         <Download className="w-3 h-3" />
                         Download
+                      </a>
+                    ) : row.fileType === "client_metrics" ? (
+                      <a
+                        href={getLogFilteredDownloadUrl(row.filename, {
+                          siteId: selectedSiteId || undefined,
+                          apMac: selectedApMac || undefined,
+                          clientMac: selectedClientMac || undefined,
+                        })}
+                        download
+                        className="flex items-center gap-1 px-2 py-1 rounded border text-xs transition-all whitespace-nowrap"
+                        style={{ borderColor: "var(--cyan)", color: "var(--cyan)" }}
+                      >
+                        <Download className="w-3 h-3" />
+                        {selectedSiteId || selectedApMac || selectedClientMac ? "Filtered DL" : "Download"}
                       </a>
                     ) : (
                       <a

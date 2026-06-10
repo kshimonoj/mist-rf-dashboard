@@ -157,6 +157,41 @@ export const fetchApMetrics = (apId: string, hours: number) =>
 export const fetchApRadioConfig = (apId: string, siteId?: string) =>
   apiFetch<ApRadioConfig>(`/api/aps/${apId}/radio-config${siteId ? `?site_id=${siteId}` : ""}`);
 
+export interface ClientMetric {
+  timestamp: string;
+  rssi: number | null;
+  snr: number | null;
+  tx_rate: number | null;
+  rx_rate: number | null;
+  tx_bps: number | null;
+  rx_bps: number | null;
+  tx_bytes: number | null;
+  rx_bytes: number | null;
+  idle_time: number | null;
+  band: string | null;
+  channel: number | null;
+  ap_name: string | null;
+}
+
+export const fetchClientMetrics = (mac: string, hours: number, siteId?: string) => {
+  const params = new URLSearchParams({ hours: String(hours) });
+  if (siteId) params.set("site_id", siteId);
+  return apiFetch<ClientMetric[]>(`/api/clients/${mac}/metrics?${params.toString()}`);
+};
+
+export interface ClientListItem {
+  mac: string;
+  hostname: string;
+}
+
+export const fetchClientList = (siteId?: string, apMac?: string) => {
+  const params = new URLSearchParams();
+  if (siteId) params.set("site_id", siteId);
+  if (apMac) params.set("ap_mac", apMac);
+  const qs = params.toString();
+  return apiFetch<ClientListItem[]>(`/api/clients/list${qs ? `?${qs}` : ""}`);
+};
+
 export interface SleMetricData {
   score: number | null;
   impact_users: number;
@@ -193,6 +228,17 @@ export interface LogFileInfo {
 
 export const fetchLogs = () => apiFetch<{ files: LogFileInfo[]; total_bytes: number }>("/api/logs");
 export const getLogDownloadUrl = (filename: string) => `${API_BASE}/api/logs/${filename}`;
+export const getLogFilteredDownloadUrl = (
+  filename: string,
+  opts: { siteId?: string; apMac?: string; clientMac?: string } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.siteId) params.set("site_id", opts.siteId);
+  if (opts.apMac) params.set("ap_mac", opts.apMac);
+  if (opts.clientMac) params.set("client_mac", opts.clientMac);
+  const qs = params.toString();
+  return `${API_BASE}/api/logs/${filename}/download${qs ? `?${qs}` : ""}`;
+};
 export const getLogsZipUrl = (filenames: string[]) =>
   `${API_BASE}/api/logs/download-zip?files=${filenames.join(",")}`;
 

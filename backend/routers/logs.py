@@ -8,7 +8,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -158,6 +158,66 @@ async def download_zip(files: str = Query(...)) -> StreamingResponse:
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="ap_metrics_export.zip"'},
+    )
+
+
+def _norm_mac(mac: str | None) -> str:
+    if not mac:
+        return ""
+    return mac.replace(":", "").replace("-", "").lower()
+
+
+@router.get("/api/logs/{filename}/download")
+async def download_log_filtered(
+    filename: str,
+    site_id: Optional[str] = None,
+    ap_mac: Optional[str] = None,
+    client_mac: Optional[str] = None,
+) -> Response:
+    """CSVログを site_id / ap_mac / client_mac で絞り込んでダウンロードする。
+    フィルター未指定ならファイルをそのまま返す。"""
+    _validate_filename(filename)
+    path = os.path.join(LOGS_DIR, filename)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not site_id and not ap_mac and not client_mac:
+        return FileResponse(
+            path, media_type="text/csv", filename=filename,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    ap_norm = _norm_mac(ap_mac)
+    client_norm = _norm_mac(client_mac)
+
+    with open(path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        rows = [
+            r for r in reader
+            if (not site_id or r.get("site_id") == site_id)
+            and (not ap_norm or _norm_mac(r.get("ap_mac")) == ap_norm)
+            and (not client_norm or _norm_mac(r.get("mac")) == client_norm)
+        ]
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+
+    suffix = ""
+    if site_id:
+        suffix += f"_{site_id[:8]}"
+    if ap_norm:
+        suffix += f"_ap{ap_norm[:6]}"
+    if client_norm:
+        suffix += f"_cl{client_norm[:6]}"
+    dl_name = filename.replace(".csv", f"{suffix}_filtered.csv")
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
     )
 
 

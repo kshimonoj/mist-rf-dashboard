@@ -1,10 +1,11 @@
 "use client";
 
-import { ChevronUp, ChevronDown, ChevronsUpDown, Search, X } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronsUpDown, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import clsx from "clsx";
 import { fetchSiteClients, fetchSettings, ClientInfo } from "@/lib/api";
+import ClientDetailModal from "./ClientDetailModal";
 
 // ── Formatters ──────────────────────────────────────────────────────────────
 
@@ -115,47 +116,6 @@ const BAND_FILTERS = [
   { label: "5GHz", value: "5" },
   { label: "6GHz", value: "6" },
 ] as const;
-
-// ── Detail Modal ────────────────────────────────────────────────────────────
-
-function ClientDetailModal({ client, onClose }: { client: ClientInfo; onClose: () => void }) {
-  const entries = Object.entries(client).filter(([k]) => k !== "_id");
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ backgroundColor: "rgba(0,0,0,0.6)" }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div
-        className="w-full max-w-md rounded-xl shadow-2xl border flex flex-col"
-        style={{ backgroundColor: "var(--bg-card)", borderColor: "var(--border-cyan)", maxHeight: "85vh" }}
-      >
-        <div className="flex items-center justify-between p-4 border-b flex-shrink-0" style={{ borderColor: "var(--border-cyan)" }}>
-          <h2 className="font-display font-semibold text-sm" style={{ color: "var(--cyan)" }}>
-            {client.hostname || client.mac}
-          </h2>
-          <button onClick={onClose} style={{ color: "var(--text-muted)" }}>
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="p-4 overflow-y-auto">
-          <table className="w-full text-xs font-mono">
-            <tbody>
-              {entries.map(([k, v]) => (
-                <tr key={k} className="border-b" style={{ borderColor: "var(--chart-grid)" }}>
-                  <td className="py-1.5 pr-3 align-top whitespace-nowrap" style={{ color: "var(--text-muted)" }}>{k}</td>
-                  <td className="py-1.5 break-all" style={{ color: "var(--text-primary)" }}>
-                    {v === null || v === undefined ? "-" : String(v)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ── Component ───────────────────────────────────────────────────────────────
 
@@ -337,7 +297,7 @@ export default function ClientsTab({ siteId }: { siteId: string }) {
         </div>
       )}
 
-      {selected && <ClientDetailModal client={selected} onClose={() => setSelected(null)} />}
+      {selected && <ClientDetailModal client={selected} siteId={siteId} onClose={() => setSelected(null)} />}
     </div>
   );
 }
