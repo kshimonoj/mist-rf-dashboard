@@ -118,11 +118,29 @@ def migrate_db():
                 ("rftemplate_name", "VARCHAR"),
             ])
 
-            # credentials: 複数環境対応（name / is_active / created_at 追加）
+            # credentials: テーブルが無ければ全カラムで作成
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS credentials ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "name TEXT NOT NULL DEFAULT 'Default', "
+                "mist_api_token TEXT, "
+                "mist_org_id TEXT, "
+                "mist_base_url TEXT, "
+                "is_active INTEGER DEFAULT 0, "
+                "created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
+                "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ))
+
+            # credentials: 既存テーブルに不足カラムを追加（モデル全カラムを網羅）
             _add_columns(conn, "credentials", [
                 ("name", "TEXT"),
+                ("mist_api_token", "TEXT"),
+                ("mist_org_id", "TEXT"),
+                ("mist_base_url", "TEXT"),
                 ("is_active", "INTEGER DEFAULT 0"),
                 ("created_at", "DATETIME"),
+                ("updated_at", "DATETIME"),
             ])
             result = conn.execute(text(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='credentials'"
