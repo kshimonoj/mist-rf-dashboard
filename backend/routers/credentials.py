@@ -39,11 +39,29 @@ def _check_settings_key(x_settings_key: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing X-Settings-Key header")
 
 
+def _validate_base_url(url: str) -> str:
+    """mist_base_url を Mist 正規エンドポイントに限定する（SSRF / トークン窃取対策）。
+    https スキーム かつ ホストが *.mist.com / mist.com のみ許可。IP・内部ホストは拒否。"""
+    from urllib.parse import urlparse
+
+    url = (url or "").strip()
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https":
+        raise HTTPException(status_code=400, detail="mist_base_url は https である必要があります")
+    if host != "mist.com" and not host.endswith(".mist.com"):
+        raise HTTPException(
+            status_code=400,
+            detail="mist_base_url のホストは *.mist.com のみ許可されています",
+        )
+    return url
+
+
 def _mask_token(token: str | None) -> str:
-    """表示用に先頭10文字のみ返す。"""
+    """表示用に先頭4文字のみ返す（業界標準の最小開示）。"""
     if not token:
         return ""
-    return token[:10] + "..."
+    return token[:4] + "****"
 
 
 def _serialize(cred: Credentials) -> dict[str, Any]:
@@ -109,7 +127,7 @@ async def create_credential(
         name=body.name.strip(),
         mist_api_token=body.mist_api_token,
         mist_org_id=body.mist_org_id,
-        mist_base_url=body.mist_base_url,
+        mist_base_url=_validate_base_url(body.mist_base_url),
         is_active=0,
     )
     db.add(cred)
@@ -134,7 +152,7 @@ async def update_credential(
     if body.mist_org_id is not None:
         cred.mist_org_id = body.mist_org_id
     if body.mist_base_url is not None:
-        cred.mist_base_url = body.mist_base_url
+        cred.mist_base_url = _validate_base_url(body.mist_base_url)
 
     db.commit()
     db.refresh(cred)

@@ -92,15 +92,23 @@ async def get_ap_clients(ap_id: str, db: Session = Depends(get_db)) -> list[dict
     }
     ap_name = next((d.get("name", "") for d in devices if d.get("id") == ap_id), "")
 
+    # フロント（ApClientsSection）が利用するフィールドのみ allowlist で返す。
+    # Mist の生オブジェクトをそのまま返さない（不要な上流フィールドの漏洩防止）。
+    allowed = (
+        "mac", "hostname", "manufacture", "os", "family", "model",
+        "band", "channel", "rssi", "snr", "tx_rate", "rx_rate",
+        "tx_bytes", "rx_bytes", "uptime", "ssid", "vlan_id", "key_mgmt",
+    )
     result = []
     for c in clients:
         ap_info = ap_by_mac.get((c.get("ap_mac") or "").lower(), {})
         resolved_ap_id = c.get("ap_id") or ap_info.get("id", "")
         if resolved_ap_id != ap_id:
             continue
-        c["ap_id"] = resolved_ap_id
-        c["ap_name"] = ap_info.get("name", "") or ap_name
-        result.append(c)
+        item = {k: c.get(k) for k in allowed}
+        item["ap_id"] = resolved_ap_id
+        item["ap_name"] = ap_info.get("name", "") or ap_name
+        result.append(item)
     return result
 
 
