@@ -145,11 +145,10 @@ async def create_snapshot_db(slot: Optional[int] = Query(None)) -> dict[str, Any
     since_str = since.strftime("%Y-%m-%d %H:%M:%S")
 
     # Get site names from Mist API
-    org_id = os.getenv("MIST_ORG_ID", "")
     site_names: dict[str, str] = {}
     try:
         client = MistClient()
-        sites_raw = await client.get_sites(org_id)
+        sites_raw = await client.get_sites(client.org_id)
         site_names = {s.get("id", ""): s.get("name", "") for s in (sites_raw or [])}
     except Exception:
         pass

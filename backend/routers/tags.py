@@ -111,7 +111,7 @@ async def upsert_ap_tag(ap_id: str, body: TagBody, db: Session = Depends(get_db)
     if not site_id or not ap_name:
         try:
             client = MistClient()
-            org_id = os.getenv("MIST_ORG_ID", "")
+            org_id = client.org_id
             sites = await client.get_sites(org_id)
             found = await _find_ap(client, sites, ap_id)
             if found:
@@ -169,7 +169,7 @@ async def upsert_client_tag(mac: str, body: TagBody, db: Session = Depends(get_d
     if not site_id or not hostname:
         try:
             client = MistClient()
-            org_id = os.getenv("MIST_ORG_ID", "")
+            org_id = client.org_id
             sites = await client.get_sites(org_id)
             found = await _find_client(client, sites, norm)
             if found:
@@ -270,7 +270,7 @@ async def get_tag_aps(tag: str, db: Session = Depends(get_db)) -> list[dict[str,
 
     # site_id 不明のタグがある場合は全サイトを走査対象にする
     if any(not r.site_id for r in tagged.values()):
-        org_id = os.getenv("MIST_ORG_ID", "")
+        org_id = client.org_id
         all_sites = await client.get_sites(org_id)
         site_ids = {s.get("id", "") for s in (all_sites or [])}
 
@@ -304,7 +304,7 @@ async def get_tag_clients(tag: str, db: Session = Depends(get_db)) -> list[dict[
     client = MistClient()
 
     if any(not r.site_id for r in tagged.values()):
-        org_id = os.getenv("MIST_ORG_ID", "")
+        org_id = client.org_id
         all_sites = await client.get_sites(org_id)
         site_ids = {s.get("id", "") for s in (all_sites or [])}
 

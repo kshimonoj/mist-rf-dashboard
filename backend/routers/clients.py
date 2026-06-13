@@ -62,6 +62,48 @@ async def get_client_metrics(
     ]
 
 
+@router.get("/api/clients/{mac}/roaming")
+async def get_client_roaming(
+    mac: str,
+    hours: int = 72,
+    site_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """指定クライアントの直近 N 時間の client_metrics から ap_id 変化点
+    （ローミングイベント）を抽出して新しい順に返す。"""
+    norm = _norm_mac(mac)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    q = db.query(ClientMetrics).filter(
+        func.lower(func.replace(func.replace(ClientMetrics.mac, ":", ""), "-", "")) == norm,
+        ClientMetrics.timestamp >= since,
+    )
+    if site_id:
+        q = q.filter(ClientMetrics.site_id == site_id)
+    rows = q.order_by(ClientMetrics.timestamp.asc()).all()
+
+    events: list[dict[str, Any]] = []
+    prev = None
+    for r in rows:
+        if not r.ap_id:
+            continue
+        if prev is not None and r.ap_id != prev.ap_id:
+            events.append({
+                "timestamp": fmt_dt(r.timestamp),
+                "from_ap_id": prev.ap_id,
+                "from_ap_name": prev.ap_name,
+                "to_ap_id": r.ap_id,
+                "to_ap_name": r.ap_name,
+                "rssi_before": prev.rssi,
+                "rssi_after": r.rssi,
+                "band_before": prev.band,
+                "band_after": r.band,
+            })
+        prev = r
+    events.reverse()  # 新しい順
+    return events
+
+
 @router.get("/api/clients/list")
 async def list_clients_for_filter(
     site_id: Optional[str] = None,

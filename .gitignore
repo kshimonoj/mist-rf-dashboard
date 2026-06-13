@@ -17,6 +17,9 @@ __pycache__/
 .next/
 node_modules/
 out/
+frontend/next-env.d.ts
+frontend/tsconfig.tsbuildinfo
+frontend/package-lock.json
 
 # Database
 *.db

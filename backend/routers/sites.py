@@ -13,7 +13,7 @@ router = APIRouter()
 async def get_all_sites() -> list[dict[str, Any]]:
     """全サイト一覧（設定用・軽量版。monitored_site_ids フィルタ非適用）"""
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
     sites = await client.get_sites(org_id)
     return [{"id": s.get("id", ""), "name": s.get("name", "")} for s in (sites or [])]
 
@@ -21,7 +21,7 @@ async def get_all_sites() -> list[dict[str, Any]]:
 @router.get("/api/sites")
 async def get_sites() -> list[dict[str, Any]]:
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
 
     sites = await client.get_sites(org_id)
     if not sites:
@@ -54,7 +54,7 @@ async def get_sites() -> list[dict[str, Any]]:
 @router.get("/api/sites/{site_id}")
 async def get_site(site_id: str) -> dict[str, Any]:
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
     sites = await client.get_sites(org_id)
     site = next((s for s in sites if s.get("id") == site_id), None)
     if not site:

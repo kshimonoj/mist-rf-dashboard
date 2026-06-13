@@ -69,11 +69,43 @@ def parse_sle_metric(data: dict, metric: str) -> dict:
     return result
 
 
+def get_active_credentials() -> dict:
+    """credentials テーブルの is_active=1 レコードを返す（リクエスト毎に DB を参照）。
+    レコードが無い・DB 未初期化の場合は .env の値にフォールバックする。"""
+    try:
+        from database import SessionLocal
+        from models import Credentials
+
+        db = SessionLocal()
+        try:
+            cred = (
+                db.query(Credentials)
+                .filter(Credentials.is_active == 1)
+                .first()
+            ) or db.query(Credentials).first()
+            if cred is not None:
+                return {
+                    "token": cred.mist_api_token or "",
+                    "org_id": cred.mist_org_id or "",
+                    "base_url": cred.mist_base_url or "https://api.mist.com/api/v1",
+                }
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"get_active_credentials fallback to env: {e}")
+    return {
+        "token": os.getenv("MIST_API_TOKEN", ""),
+        "org_id": os.getenv("MIST_ORG_ID", ""),
+        "base_url": os.getenv("MIST_BASE_URL", "https://api.mist.com/api/v1"),
+    }
+
+
 class MistClient:
     def __init__(self):
-        self.base_url = os.getenv("MIST_BASE_URL", "https://api.mist.com/api/v1").rstrip("/")
-        token = os.getenv("MIST_API_TOKEN", "")
-        self.headers = {"Authorization": f"Token {token}"}
+        cred = get_active_credentials()
+        self.base_url = cred["base_url"].rstrip("/")
+        self.org_id = cred["org_id"]
+        self.headers = {"Authorization": f"Token {cred['token']}"}
 
     async def _get(self, path: str, params: Optional[dict] = None) -> dict | list:
         url = f"{self.base_url}{path}"
@@ -199,6 +231,20 @@ class MistClient:
             params={"duration": duration},
         )
         return result if isinstance(result, dict) else {}
+
+    async def get_device_events(
+        self, site_id: str, mac: Optional[str] = None,
+        duration: str = "1d", limit: int = 200,
+    ) -> list[dict]:
+        """GET /sites/{site_id}/devices/events/search で AP イベントを取得する。
+        mac 指定でサーバー側フィルターが効く（コロンなし小文字）。"""
+        params: dict = {"duration": duration, "limit": limit, "device_type": "ap"}
+        if mac:
+            params["mac"] = mac
+        result = await self._get(f"/sites/{site_id}/devices/events/search", params=params)
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result if isinstance(result, list) else []
 
     async def get_site_clients(self, site_id: str) -> list[dict]:
         """GET /sites/{site_id}/stats/clients?wired=false で無線クライアント一覧を取得する。

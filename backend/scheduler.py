@@ -231,7 +231,7 @@ def rotate_logs(retention_days: int) -> None:
 async def poll_all_sites():
     logger.info("Starting Mist polling...")
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
     now = datetime.now(timezone.utc)
 
     sites = await client.get_sites(org_id)
@@ -401,7 +401,7 @@ async def poll_clients():
     AP metrics のポーリングとは完全に分離した別 job。"""
     logger.info("Starting client polling...")
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
     now = datetime.now(timezone.utc)
 
     sites = await client.get_sites(org_id)
@@ -466,7 +466,7 @@ async def save_floormap_log(
 ) -> str | None:
     """全サイト・全フロアのチャンネル使用状況を要約CSVに書き出す（Mist API からリアルタイム取得）。"""
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
     sites = await client.get_sites(org_id)
     if not sites:
         logger.info("[FLOORMAP SAVE] No sites.")
@@ -589,7 +589,7 @@ def _build_sle_csv_row(ts_str: str, site_id: str, site_name: str,
 async def save_sle_log(now: datetime, tz_obj, tz_abbr: str) -> None:
     """全APの6 SLEメトリクスを取得してCSVに保存する。"""
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
     sites = await client.get_sites(org_id)
     if not sites:
         logger.info("[SLE SAVE] No sites.")
@@ -711,7 +711,7 @@ async def save_hourly_logs():
     logger.info(f"[AUTO SAVE] Saving log since {since.isoformat()} ...")
 
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
     sites = await client.get_sites(org_id)
     site_names = {s.get("id", ""): s.get("name", "") for s in sites}
 
@@ -807,3 +807,14 @@ async def save_hourly_logs():
         logger.error(f"[CLIENT SAVE] Auto save failed: {e}")
 
     rotate_logs(_log_retention_days)
+
+    # ログ保存後に Insights 分析を実行（ローカルDBのみ参照・API コールなし）
+    try:
+        from analysis.engine import run_analysis
+        db = SessionLocal()
+        try:
+            run_analysis(db)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"[INSIGHTS] Auto analysis failed: {e}")

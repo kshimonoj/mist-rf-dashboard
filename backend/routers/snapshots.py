@@ -40,7 +40,7 @@ async def create_snapshot() -> dict[str, Any]:
     tz_abbr = now_local.strftime("%Z")
 
     client = MistClient()
-    org_id = os.getenv("MIST_ORG_ID", "")
+    org_id = client.org_id
     sites = await client.get_sites(org_id)
     site_names = {s.get("id", ""): s.get("name", "") for s in sites}
 

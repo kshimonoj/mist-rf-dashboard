@@ -4,7 +4,7 @@ import { ArrowLeft, Home } from "lucide-react";
 import Link from "next/link";
 import SaveNowButton from "@/app/components/SaveNowButton";
 import PollNowButton from "@/app/components/PollNowButton";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import useSWR from "swr";
 import { Line } from "recharts";
 import { fetchApMetrics, fetchApRadioConfig, ApMetric, ApRadioConfig } from "@/lib/api";
@@ -16,6 +16,9 @@ import {
   RadioBandPanel, ChartSection,
 } from "@/app/components/ApDetailShared";
 import SleSection from "@/app/components/SleSection";
+import ApClientsSection from "@/app/components/ApClientsSection";
+import ApEventsSection from "@/app/components/ApEventsSection";
+import { ImpactPanel } from "@/app/components/ConfigImpactPanel";
 
 type HourRange = 1 | 6 | 24 | 72;
 
@@ -28,6 +31,7 @@ export default function ApDetailPage({
   const { timezone } = useTimezone();
   const [hours, setHours] = useState<HourRange>(24);
   const [bandTab, setBandTab] = useState<"24" | "5" | "6">("24");
+  const [expandedChangeId, setExpandedChangeId] = useState<number | null>(null);
 
   const { data: metrics, mutate: mutateMetrics } = useSWR<ApMetric[]>(
     `ap-metrics-${apId}-${hours}`,
@@ -318,7 +322,10 @@ export default function ApDetailPage({
         />
       </section>
 
-      {/* Section 5: 変更履歴テーブル */}
+      {/* Section 5: 接続中クライアント */}
+      <ApClientsSection apId={apId} siteId={siteId} />
+
+      {/* Section 6: 変更履歴テーブル */}
       <section className={sectionClass} style={sectionStyle}>
         <h2 className="text-sm font-display font-semibold mb-4 tracking-wider" style={{ color: "var(--cyan)" }}>
           CONFIG CHANGE HISTORY
@@ -330,7 +337,7 @@ export default function ApDetailPage({
             <table className="w-full text-sm font-mono border-collapse">
               <thead>
                 <tr className="border-b" style={{ borderColor: "var(--border-cyan)" }}>
-                  {["Detected At", "Band", "Field", "Old → New", "Source Change"].map((h) => (
+                  {["Detected At", "Band", "Field", "Old → New", "Source Change", "Impact"].map((h) => (
                     <th key={h} className="text-left py-3 px-3 font-normal" style={{ color: "var(--text-muted)" }}>
                       {h}
                     </th>
@@ -339,40 +346,65 @@ export default function ApDetailPage({
               </thead>
               <tbody>
                 {changes.map((c) => (
-                  <tr key={c.id} className="border-b transition-colors" style={{ borderColor: "var(--chart-grid)" }}>
-                    <td className="py-3 px-3 whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
-                      {toLocalString(c.detected_at, timezone)}
-                    </td>
-                    <td className="py-3 px-3" style={{ color: "var(--text-primary)" }}>
-                      {c.band}
-                    </td>
-                    <td className="py-2 px-3">
-                      <span
-                        className="px-2 py-0.5 rounded text-xs font-mono border"
-                        style={{
-                          color: CHANGE_FIELD_COLORS[c.changed_field] ?? "var(--text-primary)",
-                          borderColor: CHANGE_FIELD_COLORS[c.changed_field] ?? "var(--chart-grid)",
-                          backgroundColor: `${CHANGE_FIELD_COLORS[c.changed_field] ?? "#fff"}15`,
-                        }}
-                      >
-                        {c.changed_field}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3" style={{ color: "var(--text-primary)" }}>
-                      {c.old_value ?? "-"} → {c.new_value ?? "-"}
-                    </td>
-                    <td className="py-3 px-3" style={{ color: "var(--text-secondary)" }}>
-                      {c.old_source || c.new_source
-                        ? `${c.old_source ?? "-"} → ${c.new_source ?? "-"}`
-                        : "-"}
-                    </td>
-                  </tr>
+                  <Fragment key={c.id}>
+                    <tr className="border-b transition-colors" style={{ borderColor: "var(--chart-grid)" }}>
+                      <td className="py-3 px-3 whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
+                        {toLocalString(c.detected_at, timezone)}
+                      </td>
+                      <td className="py-3 px-3" style={{ color: "var(--text-primary)" }}>
+                        {c.band}
+                      </td>
+                      <td className="py-2 px-3">
+                        <span
+                          className="px-2 py-0.5 rounded text-xs font-mono border"
+                          style={{
+                            color: CHANGE_FIELD_COLORS[c.changed_field] ?? "var(--text-primary)",
+                            borderColor: CHANGE_FIELD_COLORS[c.changed_field] ?? "var(--chart-grid)",
+                            backgroundColor: `${CHANGE_FIELD_COLORS[c.changed_field] ?? "#fff"}15`,
+                          }}
+                        >
+                          {c.changed_field}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3" style={{ color: "var(--text-primary)" }}>
+                        {c.old_value ?? "-"} → {c.new_value ?? "-"}
+                      </td>
+                      <td className="py-3 px-3" style={{ color: "var(--text-secondary)" }}>
+                        {c.old_source || c.new_source
+                          ? `${c.old_source ?? "-"} → ${c.new_source ?? "-"}`
+                          : "-"}
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <button
+                          onClick={() => setExpandedChangeId((id) => (id === c.id ? null : c.id))}
+                          className="px-2 py-1 rounded border text-xs transition-all"
+                          style={
+                            expandedChangeId === c.id
+                              ? { borderColor: "var(--cyan)", color: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }
+                              : { borderColor: "var(--chart-grid)", color: "var(--text-muted)" }
+                          }
+                        >
+                          📊 Impact
+                        </button>
+                      </td>
+                    </tr>
+                    {expandedChangeId === c.id && (
+                      <tr className="border-b" style={{ borderColor: "var(--chart-grid)" }}>
+                        <td colSpan={6} className="px-3" style={{ backgroundColor: "var(--bg-hover)" }}>
+                          <ImpactPanel changeId={c.id} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
           </div>
         )}
       </section>
+
+      {/* Section 7: APイベント（直近24h） */}
+      <ApEventsSection apId={apId} />
     </main>
   );
 }

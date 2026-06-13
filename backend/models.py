@@ -169,13 +169,37 @@ class AppSettings(Base):
     timezone = Column(String, default="Asia/Tokyo")
     monitored_site_ids = Column(Text, nullable=True)  # JSON array string
     client_polling_interval_seconds = Column(Integer, default=600)
+    last_insights_analyzed_at = Column(DateTime, nullable=True)
+
+
+class Insight(Base):
+    __tablename__ = "insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    first_detected_at = Column(DateTime, default=func.now())  # 初回検知時刻
+    last_detected_at = Column(DateTime, default=func.now())   # 最終検知時刻
+    resolved_at = Column(DateTime, nullable=True)             # 解消時刻（NULL=アクティブ）
+    status = Column(String, default="active", index=True)     # 'active' / 'resolved'
+    category = Column(String, index=True)   # sticky_client / band24_stuck / high_retry / co_channel / flapping
+    severity = Column(String)               # critical / warning
+    site_id = Column(String, index=True)
+    site_name = Column(String, nullable=True)
+    target_type = Column(String)            # ap / client / ap_pair
+    target_id = Column(String)              # ap_id / client mac / "ap_id1|ap_id2"
+    target_name = Column(String, nullable=True)  # AP名 / hostname(なければMAC) / "AP03 ↔ AP04"
+    detail = Column(Text, nullable=True)
+    recommendation = Column(Text, nullable=True)
+    metrics_json = Column(Text, nullable=True)   # 補足データ(JSON文字列)
 
 
 class Credentials(Base):
     __tablename__ = "credentials"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(Text, nullable=False, default="Default")  # 環境名 e.g. "Kyobashi"
     mist_api_token = Column(Text, nullable=True)
     mist_org_id = Column(Text, nullable=True)
     mist_base_url = Column(Text, nullable=True)
+    is_active = Column(Integer, default=0)  # 1=アクティブ環境（常に1件のみ）
+    created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

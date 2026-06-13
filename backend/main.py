@@ -12,7 +12,7 @@ load_dotenv()
 
 from database import Base, SessionLocal, engine, migrate_db
 from models import AppSettings, Credentials
-from routers import aps, clients, credentials, floor_map, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots, tags
+from routers import aps, clients, credentials, floor_map, insights, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots, tags
 import scheduler as sched_module
 from scheduler import poll_all_sites, poll_clients, save_hourly_logs, scheduler
 
@@ -22,26 +22,24 @@ logger = logging.getLogger(__name__)
 
 def _init_credentials() -> None:
     """起動時に credentials テーブルを初期化する。
-    - DB に値がなければ .env の値をシードする
-    - DB の値を os.environ に反映する（.env より DB を優先）
-    """
-    from routers.credentials import _apply_to_env
-
+    テーブルが空なら .env の値から "Default" 環境を is_active=1 でシードする。
+    （Mist API クライアントは毎回 is_active=1 のレコードを参照する）"""
     db = SessionLocal()
     try:
-        cred = db.query(Credentials).first()
-        if cred is None:
-            token = os.getenv("MIST_API_TOKEN", "")
-            org_id = os.getenv("MIST_ORG_ID", "")
-            base_url = os.getenv("MIST_BASE_URL", "https://api.mist.com/api/v1")
-            cred = Credentials(id=1, mist_api_token=token, mist_org_id=org_id, mist_base_url=base_url)
+        if db.query(Credentials).count() == 0:
+            cred = Credentials(
+                name="Default",
+                mist_api_token=os.getenv("MIST_API_TOKEN", ""),
+                mist_org_id=os.getenv("MIST_ORG_ID", ""),
+                mist_base_url=os.getenv("MIST_BASE_URL", "https://api.mist.com/api/v1"),
+                is_active=1,
+            )
             db.add(cred)
             db.commit()
-            db.refresh(cred)
-            logger.info("Credentials initialized from .env")
+            logger.info("Credentials seeded from .env (name=Default)")
         else:
-            _apply_to_env(cred)
-            logger.info("Credentials loaded from DB")
+            active = db.query(Credentials).filter(Credentials.is_active == 1).first()
+            logger.info(f"Active credentials: {active.name if active else 'none'}")
     except Exception as e:
         logger.warning(f"_init_credentials failed: {e}")
     finally:
@@ -132,6 +130,7 @@ app.include_router(sites.router)
 app.include_router(aps.router)
 app.include_router(clients.router)
 app.include_router(tags.router)
+app.include_router(insights.router)
 app.include_router(sle.router)
 app.include_router(floor_map.router)
 app.include_router(radio.router)

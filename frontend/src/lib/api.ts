@@ -156,6 +156,8 @@ export const fetchApMetrics = (apId: string, hours: number) =>
   apiFetch<ApMetric[]>(`/api/aps/${apId}/metrics?hours=${hours}`);
 export const fetchApRadioConfig = (apId: string, siteId?: string) =>
   apiFetch<ApRadioConfig>(`/api/aps/${apId}/radio-config${siteId ? `?site_id=${siteId}` : ""}`);
+export const fetchApClients = (apId: string) =>
+  apiFetch<ClientInfo[]>(`/api/aps/${apId}/clients`);
 
 export interface ClientMetric {
   timestamp: string;
@@ -505,27 +507,164 @@ export async function putClientTag(mac: string, tags: string): Promise<{ tags: s
   return res.json();
 }
 
-// ── Credentials ───────────────────────────────────────────────────────────────
+// ── Insights ──────────────────────────────────────────────────────────────────
 
-export interface CredentialsData {
-  mist_api_token: string;
+export type InsightCategory =
+  | "sticky_client"
+  | "band24_stuck"
+  | "high_retry"
+  | "co_channel"
+  | "flapping";
+
+export type InsightSeverity = "critical" | "warning";
+
+export interface InsightIssue {
+  id: number;
+  first_detected_at: string;
+  last_detected_at: string;
+  resolved_at: string | null;
+  status: "active" | "resolved";
+  category: InsightCategory;
+  severity: InsightSeverity;
+  site_id: string;
+  site_name: string | null;
+  target_type: "ap" | "client" | "ap_pair";
+  target_id: string;
+  target_name: string | null;
+  detail: string | null;
+  recommendation: string | null;
+  metrics_json: string | null;
+}
+
+export interface InsightRecommendation {
+  ap_id: string | null;
+  ap_name: string | null;
+  site_id: string | null;
+  site_name: string | null;
+  actions: string[];
+}
+
+export interface InsightsResponse {
+  analyzed_at: string | null;
+  summary: Record<InsightCategory, number>;
+  recommendations: InsightRecommendation[];
+  issues: InsightIssue[];
+}
+
+export const fetchInsights = (view?: "history") =>
+  apiFetch<InsightsResponse>(`/api/insights${view ? `?view=${view}` : ""}`);
+
+export async function analyzeInsights(): Promise<InsightsResponse> {
+  const res = await fetch(`${API_BASE}/api/insights/analyze`, { method: "POST" });
+  if (!res.ok) throw new Error(`Insights analyze error ${res.status}`);
+  return res.json();
+}
+
+export type ImpactJudgment = "improved" | "degraded" | "neutral" | "no_data";
+export type ImpactVerdict = "improved" | "degraded" | "neutral" | "insufficient_data";
+
+export interface ImpactMetric {
+  key: string;
+  label: string;
+  unit: string;
+  before: number | null;
+  after: number | null;
+  change_pct: number | null;
+  judgment: ImpactJudgment;
+}
+
+export interface ConfigImpact {
+  change_id: number;
+  ap_id: string;
+  ap_name: string | null;
+  site_id: string | null;
+  band: string;
+  changed_field: string;
+  old_value: string | null;
+  new_value: string | null;
+  detected_at: string;
+  before_hours: number;
+  after_hours: number;
+  verdict: ImpactVerdict;
+  metrics: ImpactMetric[];
+}
+
+export const fetchConfigImpact = (changeId: number) =>
+  apiFetch<ConfigImpact>(`/api/insights/config-impact?change_id=${changeId}`);
+
+export interface RecentConfigChange {
+  id: number;
+  ap_id: string;
+  ap_name: string | null;
+  site_id: string | null;
+  band: string;
+  changed_field: string;
+  old_value: string | null;
+  new_value: string | null;
+  detected_at: string;
+}
+
+export const fetchRecentConfigChanges = (days = 7) =>
+  apiFetch<RecentConfigChange[]>(`/api/insights/config-changes?days=${days}`);
+
+export interface RoamingEvent {
+  timestamp: string;
+  from_ap_id: string;
+  from_ap_name: string | null;
+  to_ap_id: string;
+  to_ap_name: string | null;
+  rssi_before: number | null;
+  rssi_after: number | null;
+  band_before: string | null;
+  band_after: string | null;
+}
+
+export const fetchClientRoaming = (mac: string, hours = 72, siteId?: string) => {
+  const params = new URLSearchParams({ hours: String(hours) });
+  if (siteId) params.set("site_id", siteId);
+  return apiFetch<RoamingEvent[]>(`/api/clients/${mac}/roaming?${params.toString()}`);
+};
+
+export interface ApEvent {
+  timestamp: string | null;
+  type: string;
+  text: string;
+}
+
+export const fetchApEvents = (apId: string, duration = "1d") =>
+  apiFetch<{ events: ApEvent[] }>(`/api/aps/${apId}/events?duration=${duration}`);
+
+// ── Credentials (Environments) ────────────────────────────────────────────────
+
+export interface CredentialItem {
+  id: number;
+  name: string;
+  mist_api_token: string; // 先頭10文字のみ（マスク済み）
   mist_org_id: string;
   mist_base_url: string;
+  is_active: boolean;
+  created_at: string | null;
+}
+
+export interface CredentialsResponse {
+  items: CredentialItem[];
   secret_required: boolean;
 }
 
-export const fetchCredentials = () => apiFetch<CredentialsData>("/api/credentials");
+export const fetchCredentials = () => apiFetch<CredentialsResponse>("/api/credentials");
 
-export async function updateCredentials(
-  body: { mist_api_token?: string; mist_org_id?: string; mist_base_url?: string },
+async function credentialsRequest<T>(
+  path: string,
+  method: string,
+  body?: unknown,
   settingsKey?: string
-): Promise<CredentialsData> {
+): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (settingsKey) headers["X-Settings-Key"] = settingsKey;
-  const res = await fetch(`${API_BASE}/api/credentials`, {
-    method: "POST",
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
     headers,
-    body: JSON.stringify(body),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) {
     let detail: string | undefined;
@@ -534,3 +673,33 @@ export async function updateCredentials(
   }
   return res.json();
 }
+
+export interface CredentialInput {
+  name: string;
+  mist_api_token: string;
+  mist_org_id: string;
+  mist_base_url: string;
+}
+
+export const createCredential = (body: CredentialInput, settingsKey?: string) =>
+  credentialsRequest<CredentialItem>("/api/credentials", "POST", body, settingsKey);
+
+export const updateCredential = (
+  id: number,
+  body: Partial<CredentialInput>,
+  settingsKey?: string
+) => credentialsRequest<CredentialItem>(`/api/credentials/${id}`, "PUT", body, settingsKey);
+
+export const deleteCredential = (id: number, settingsKey?: string) =>
+  credentialsRequest<{ status: string; deleted: number }>(
+    `/api/credentials/${id}`, "DELETE", undefined, settingsKey
+  );
+
+export const activateCredential = (
+  id: number,
+  body: { clear_logs: boolean; clear_snapshots: boolean },
+  settingsKey?: string
+) =>
+  credentialsRequest<{ status: string; activated: string }>(
+    `/api/credentials/${id}/activate`, "POST", body, settingsKey
+  );

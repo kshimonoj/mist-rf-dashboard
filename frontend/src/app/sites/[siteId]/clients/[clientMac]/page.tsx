@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Home } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Home } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
@@ -9,7 +9,8 @@ import {
   ResponsiveContainer, ReferenceLine, Legend,
 } from "recharts";
 import {
-  fetchSiteClients, fetchClientMetrics, ClientInfo, ClientMetric,
+  fetchSiteClients, fetchClientMetrics, fetchClientRoaming, fetchInsights,
+  ClientInfo, ClientMetric, InsightsResponse, RoamingEvent,
 } from "@/lib/api";
 import { toLocalString, toLocalTimeShort, toLocalDateTimeShort } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
@@ -25,6 +26,18 @@ function bandLabel(band: string | null | undefined): string {
     default:   return band ? String(band) : "-";
   }
 }
+
+function normMac(mac: string | null | undefined): string {
+  return (mac ?? "").replace(/[:-]/g, "").toLowerCase();
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  sticky_client: "Sticky Client",
+  band24_stuck: "2.4GHz滞留",
+  high_retry: "High Retry",
+  co_channel: "Co-channel",
+  flapping: "Flapping",
+};
 
 function bandToNum(band: string | null | undefined): number | null {
   switch (String(band)) {
@@ -111,6 +124,116 @@ function ChartBox({ title, data, hours, markers, children, rightAxis, yDomain }:
         </LineChart>
       </ResponsiveContainer>
     </div>
+  );
+}
+
+// ── 警告バナー ─────────────────────────────────────────────────────────────────
+
+function InsightBanners({ clientMac }: { clientMac: string }) {
+  const { data } = useSWR<InsightsResponse>("insights", fetchInsights);
+  const issues = useMemo(
+    () =>
+      (data?.issues ?? []).filter(
+        (i) => i.target_type === "client" && normMac(i.target_id) === normMac(clientMac),
+      ),
+    [data, clientMac],
+  );
+  if (issues.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      {issues.map((issue) => {
+        const isCritical = issue.severity === "critical";
+        const color = isCritical ? "var(--red)" : "var(--yellow)";
+        const bg = isCritical ? "rgba(255,68,68,0.08)" : "rgba(255,215,0,0.08)";
+        return (
+          <div
+            key={issue.id}
+            className="border rounded-lg p-4 flex items-start gap-3"
+            style={{ borderColor: color, backgroundColor: bg }}
+          >
+            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" style={{ color }} />
+            <div className="space-y-1">
+              <p className="text-sm font-mono font-semibold" style={{ color }}>
+                [{isCritical ? "Critical" : "Warning"}] {CATEGORY_LABELS[issue.category] ?? issue.category}
+              </p>
+              <p className="text-sm" style={{ color: "var(--text-primary)" }}>{issue.detail}</p>
+              {issue.recommendation && (
+                <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                  推奨: {issue.recommendation}
+                </p>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Roaming History ───────────────────────────────────────────────────────────
+
+function RoamingHistorySection({ clientMac, siteId }: { clientMac: string; siteId: string }) {
+  const { timezone } = useTimezone();
+  const { data: events, isLoading } = useSWR<RoamingEvent[]>(
+    `client-roaming-${clientMac}`,
+    () => fetchClientRoaming(clientMac, 72, siteId),
+  );
+
+  const fmtRssi = (v: number | null) => (v !== null && v !== undefined ? `${v}dBm` : "-");
+
+  return (
+    <section
+      className="border rounded-lg p-5"
+      style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}
+    >
+      <h2 className="text-sm font-display font-semibold mb-4 tracking-wider" style={{ color: "var(--cyan)" }}>
+        ROAMING HISTORY (72h)
+      </h2>
+      {isLoading ? (
+        <p className="text-sm animate-pulse" style={{ color: "var(--cyan)" }}>Loading...</p>
+      ) : !events || events.length === 0 ? (
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>ローミング履歴なし（72h）</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm font-mono border-collapse">
+            <thead>
+              <tr className="border-b" style={{ borderColor: "var(--border-cyan)" }}>
+                {["Time", "AP切替", "RSSI (前 → 後)", "Band"].map((h) => (
+                  <th key={h} className="text-left py-3 px-3 font-normal" style={{ color: "var(--text-muted)" }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {events.map((e, i) => (
+                <tr key={`${e.timestamp}-${i}`} className="border-b" style={{ borderColor: "var(--chart-grid)" }}>
+                  <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
+                    {toLocalString(e.timestamp, timezone)}
+                  </td>
+                  <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: "var(--text-primary)" }}>
+                    {e.from_ap_name || e.from_ap_id} <span style={{ color: "var(--cyan)" }}>→</span>{" "}
+                    {e.to_ap_name || e.to_ap_id}
+                  </td>
+                  <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
+                    {fmtRssi(e.rssi_before)} → {fmtRssi(e.rssi_after)}
+                  </td>
+                  <td className="py-2.5 px-3 whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
+                    {e.band_before !== e.band_after ? (
+                      <span style={{ color: "var(--orange)" }}>
+                        {bandLabel(e.band_before)} → {bandLabel(e.band_after)}
+                      </span>
+                    ) : (
+                      bandLabel(e.band_after)
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -215,6 +338,9 @@ export default function ClientDetailPage({
         </div>
       </header>
 
+      {/* 警告バナー（このクライアントに関する Insights 検知） */}
+      <InsightBanners clientMac={clientMac} />
+
       {/* Section 1: 基本情報 */}
       <section className={sectionClass} style={sectionStyle}>
         <h2 className="text-sm font-display font-semibold mb-4 tracking-wider" style={{ color: "var(--cyan)" }}>
@@ -307,6 +433,9 @@ export default function ClientDetailPage({
           </div>
         )}
       </section>
+
+      {/* Section 3: Roaming History */}
+      <RoamingHistorySection clientMac={clientMac} siteId={siteId} />
     </main>
   );
 }

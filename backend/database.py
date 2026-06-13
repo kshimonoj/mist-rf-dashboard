@@ -74,6 +74,31 @@ def migrate_db():
                 ("client_polling_interval_seconds", "INTEGER"),
             ])
 
+            # app_settings: last_insights_analyzed_at カラム追加
+            _add_columns(conn, "app_settings", [
+                ("last_insights_analyzed_at", "DATETIME"),
+            ])
+
+            # insights: 検知履歴の蓄積方式へ移行（detected_at → first_detected_at + 追加カラム）
+            _rename_columns(conn, "insights", [
+                ("detected_at", "first_detected_at"),
+            ])
+            _add_columns(conn, "insights", [
+                ("last_detected_at", "DATETIME"),
+                ("resolved_at", "DATETIME"),
+                ("status", "TEXT"),
+            ])
+            result = conn.execute(text(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='insights'"
+            ))
+            if (result.scalar() or 0) > 0:
+                conn.execute(text(
+                    "UPDATE insights SET status='active' WHERE status IS NULL"
+                ))
+                conn.execute(text(
+                    "UPDATE insights SET last_detected_at=first_detected_at WHERE last_detected_at IS NULL"
+                ))
+
             # radio_config_current: 旧列名 → 新列名へリネーム（先に実行）
             _rename_columns(conn, "radio_config_current", [
                 ("device_profile_id", "deviceprofile_id"),
@@ -92,6 +117,35 @@ def migrate_db():
                 ("rftemplate_id", "VARCHAR"),
                 ("rftemplate_name", "VARCHAR"),
             ])
+
+            # credentials: 複数環境対応（name / is_active / created_at 追加）
+            _add_columns(conn, "credentials", [
+                ("name", "TEXT"),
+                ("is_active", "INTEGER DEFAULT 0"),
+                ("created_at", "DATETIME"),
+            ])
+            result = conn.execute(text(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='credentials'"
+            ))
+            if (result.scalar() or 0) > 0:
+                conn.execute(text(
+                    "UPDATE credentials SET name='Default' WHERE name IS NULL OR name=''"
+                ))
+                conn.execute(text(
+                    "UPDATE credentials SET is_active=0 WHERE is_active IS NULL"
+                ))
+                conn.execute(text(
+                    "UPDATE credentials SET created_at=CURRENT_TIMESTAMP WHERE created_at IS NULL"
+                ))
+                # アクティブが1件も無ければ最古レコードをアクティブにする
+                result = conn.execute(text(
+                    "SELECT COUNT(*) FROM credentials WHERE is_active=1"
+                ))
+                if (result.scalar() or 0) == 0:
+                    conn.execute(text(
+                        "UPDATE credentials SET is_active=1 "
+                        "WHERE id=(SELECT MIN(id) FROM credentials)"
+                    ))
 
             # radio_config_changes: 旧スキーマ（audit_id列あり）なら DROP して再作成
             result = conn.execute(text(

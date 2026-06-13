@@ -3,28 +3,9 @@
 import { X, Settings, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import useSWR, { mutate as globalMutate } from "swr";
-import { fetchSettings, fetchAllSites, updateSettings, pollNow, fetchCredentials, updateCredentials } from "@/lib/api";
+import { fetchSettings, fetchAllSites, updateSettings, pollNow } from "@/lib/api";
 import { useTimezone } from "@/app/providers";
-
-const MIST_REGIONS = [
-  { label: "Global 01", url: "https://api.mist.com/api/v1" },
-  { label: "Global 02 (GC1)", url: "https://api.gc1.mist.com/api/v1" },
-  { label: "Global 03 / APAC (AC2)", url: "https://api.ac2.mist.com/api/v1" },
-  { label: "Global 04 (GC2)", url: "https://api.gc2.mist.com/api/v1" },
-  { label: "Global 05 (GC4)", url: "https://api.gc4.mist.com/api/v1" },
-  { label: "EMEA 01 (EU)", url: "https://api.eu.mist.com/api/v1" },
-  { label: "EMEA 02 (GC3)", url: "https://api.gc3.mist.com/api/v1" },
-  { label: "EMEA 03 (AC6)", url: "https://api.ac6.mist.com/api/v1" },
-  { label: "EMEA 04 (GC6)", url: "https://api.gc6.mist.com/api/v1" },
-  { label: "APAC 01 (AC5)", url: "https://api.ac5.mist.com/api/v1" },
-  { label: "APAC 02 (GC5)", url: "https://api.gc5.mist.com/api/v1" },
-  { label: "APAC 03 (GC7)", url: "https://api.gc7.mist.com/api/v1" },
-] as const;
-
-function urlToRegion(url: string): string {
-  const match = MIST_REGIONS.find((r) => r.url === url);
-  return match ? match.url : "custom";
-}
+import EnvironmentsSection from "./EnvironmentsSection";
 
 export default function SettingsButton() {
   const [open, setOpen] = useState(false);
@@ -47,7 +28,6 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const { setTimezone: setGlobalTimezone } = useTimezone();
   const { data, mutate } = useSWR("settings", fetchSettings);
   const { data: allSites } = useSWR("all-sites", fetchAllSites);
-  const { data: credData, mutate: mutateCredentials } = useSWR("credentials", fetchCredentials);
 
   const [pollInterval, setPollInterval] = useState<number | "">(data?.polling_interval_seconds ?? "");
   const [logInterval, setLogInterval] = useState<number | "">(data?.log_interval_minutes ?? "");
@@ -61,30 +41,6 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const sitesInitialized = useRef(false);
-
-  // Credentials state
-  const [credToken, setCredToken] = useState("");
-  const [credOrgId, setCredOrgId] = useState("");
-  const [credRegion, setCredRegion] = useState("https://api.mist.com/api/v1");
-  const [credCustomUrl, setCredCustomUrl] = useState("");
-  const [credSettingsKey, setCredSettingsKey] = useState("");
-  const [credSaving, setCredSaving] = useState(false);
-  const [credToast, setCredToast] = useState<{ msg: string; ok: boolean } | null>(null);
-  const credInitialized = useRef(false);
-
-  useEffect(() => {
-    if (credData && !credInitialized.current) {
-      credInitialized.current = true;
-      setCredOrgId(credData.mist_org_id);
-      const regionUrl = urlToRegion(credData.mist_base_url);
-      if (regionUrl === "custom") {
-        setCredRegion("custom");
-        setCredCustomUrl(credData.mist_base_url);
-      } else {
-        setCredRegion(regionUrl);
-      }
-    }
-  }, [credData]);
 
   useEffect(() => {
     if (data) {
@@ -136,32 +92,6 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const selectAll = () => setSelectedIds(new Set(allSites?.map((s) => s.id) ?? []));
   const deselectAll = () => setSelectedIds(new Set());
 
-  const handleSaveCredentials = async () => {
-    setCredSaving(true);
-    try {
-      const baseUrl = credRegion === "custom" ? credCustomUrl.trim() : credRegion;
-      await updateCredentials(
-        {
-          ...(credToken ? { mist_api_token: credToken } : {}),
-          mist_org_id: credOrgId.trim(),
-          mist_base_url: baseUrl,
-        },
-        credSettingsKey || undefined
-      );
-      await mutateCredentials();
-      setCredToken("");
-      setCredSettingsKey("");
-      setCredToast({ msg: "設定を保存しました。次回ポーリング時から反映されます。", ok: true });
-      setTimeout(() => setCredToast(null), 4000);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "保存に失敗しました";
-      setCredToast({ msg, ok: false });
-      setTimeout(() => setCredToast(null), 5000);
-    } finally {
-      setCredSaving(false);
-    }
-  };
-
   const handleApply = async () => {
     if (!canApply) return;
     const clientPollSeconds = Number(clientPollMinutes) * 60;
@@ -212,7 +142,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className="w-full max-w-lg rounded-xl shadow-2xl border flex flex-col"
+        className="w-full max-w-2xl rounded-xl shadow-2xl border flex flex-col"
         style={{
           backgroundColor: "var(--bg-card)",
           borderColor: "var(--border-cyan)",
@@ -232,129 +162,8 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="p-5 space-y-6 overflow-y-auto">
-          {/* API Credentials */}
-          <div
-            className="rounded-lg p-4 space-y-4"
-            style={{ backgroundColor: "var(--bg-hover)", border: "1px solid var(--border-cyan)" }}
-          >
-            <h3 className="text-xs font-mono font-semibold tracking-widest" style={{ color: "var(--cyan)" }}>
-              API CREDENTIALS
-            </h3>
-
-            <div>
-              <label className="block text-sm font-mono mb-1" style={{ color: "var(--text-secondary)" }}>
-                API Token
-              </label>
-              <input
-                type="password"
-                value={credToken}
-                onChange={(e) => setCredToken(e.target.value)}
-                placeholder={credData?.mist_api_token || "変更しない場合は空欄"}
-                className="w-full px-3 py-2 rounded border bg-transparent text-sm font-mono"
-                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
-              />
-              {credData?.mist_api_token && (
-                <p className="text-xs mt-1 font-mono" style={{ color: "var(--text-muted)" }}>
-                  現在: {credData.mist_api_token}（空欄のまま保存すると既存トークンを維持）
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-mono mb-1" style={{ color: "var(--text-secondary)" }}>
-                Org ID
-              </label>
-              <input
-                type="text"
-                value={credOrgId}
-                onChange={(e) => setCredOrgId(e.target.value)}
-                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                className="w-full px-3 py-2 rounded border bg-transparent text-sm font-mono"
-                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-mono mb-1" style={{ color: "var(--text-secondary)" }}>
-                Region
-              </label>
-              <select
-                value={credRegion}
-                onChange={(e) => setCredRegion(e.target.value)}
-                className="w-full px-3 py-2 rounded border bg-transparent text-sm font-mono"
-                style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)", backgroundColor: "var(--bg-card)" }}
-              >
-                {MIST_REGIONS.map((r) => (
-                  <option key={r.url} value={r.url} style={{ backgroundColor: "var(--bg-card)" }}>
-                    {r.label}
-                  </option>
-                ))}
-                <option value="custom" style={{ backgroundColor: "var(--bg-card)" }}>
-                  カスタム
-                </option>
-              </select>
-              {credRegion === "custom" && (
-                <input
-                  type="text"
-                  value={credCustomUrl}
-                  onChange={(e) => setCredCustomUrl(e.target.value)}
-                  placeholder="https://api.example.mist.com/api/v1"
-                  className="w-full mt-2 px-3 py-2 rounded border bg-transparent text-sm font-mono"
-                  style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
-                />
-              )}
-              {credRegion !== "custom" && (
-                <p className="text-xs mt-1 font-mono" style={{ color: "var(--text-muted)" }}>
-                  {credRegion}
-                </p>
-              )}
-            </div>
-
-            {credData?.secret_required && (
-              <div>
-                <label className="block text-sm font-mono mb-1" style={{ color: "var(--text-secondary)" }}>
-                  Admin Key <span style={{ color: "var(--text-muted)" }}>(SETTINGS_SECRET)</span>
-                </label>
-                <input
-                  type="password"
-                  value={credSettingsKey}
-                  onChange={(e) => setCredSettingsKey(e.target.value)}
-                  placeholder="サーバー設定の SETTINGS_SECRET 値"
-                  className="w-full px-3 py-2 rounded border bg-transparent text-sm font-mono"
-                  style={{ borderColor: "var(--border-cyan)", color: "var(--text-primary)" }}
-                />
-                <p className="text-xs mt-1 font-mono" style={{ color: "var(--text-muted)" }}>
-                  このサーバーは管理者キーが必要です
-                </p>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                {credToast && (
-                  <span
-                    className="text-xs font-mono"
-                    style={{ color: credToast.ok ? "var(--green)" : "var(--red)" }}
-                  >
-                    {credToast.msg}
-                  </span>
-                )}
-              </div>
-              <button
-                onClick={handleSaveCredentials}
-                disabled={credSaving}
-                className="px-4 py-2 rounded-lg text-sm font-mono transition-all disabled:opacity-40"
-                style={{
-                  backgroundColor: "rgba(0,212,255,0.15)",
-                  borderWidth: 1,
-                  borderColor: "var(--border-cyan)",
-                  color: "var(--cyan)",
-                }}
-              >
-                {credSaving ? "Saving..." : "Save Credentials"}
-              </button>
-            </div>
-          </div>
+          {/* Environments (Mist 接続情報の管理・切り替え) */}
+          <EnvironmentsSection />
 
           {/* Polling Interval */}
           <div>

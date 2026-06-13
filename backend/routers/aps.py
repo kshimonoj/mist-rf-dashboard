@@ -16,8 +16,6 @@ from utils import fmt_dt
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-ORG_ID = os.getenv("MIST_ORG_ID", "")
-
 async def _empty_list() -> list:
     return []
 
@@ -65,6 +63,80 @@ async def get_ap_metrics(ap_id: str, hours: int = 24, db: Session = Depends(get_
     ]
 
 
+@router.get("/api/aps/{ap_id}/clients")
+async def get_ap_clients(ap_id: str, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """指定 AP に接続中の無線クライアント一覧をリアルタイムで返す。
+    ap_id から site_id を DB で引き、サイトの stats/clients を取得して ap_id 一致分を返す。"""
+    # site_id を DB から解決
+    rec = db.query(RadioConfigCurrent).filter_by(ap_id=ap_id).first()
+    site_id = rec.site_id if rec else None
+    if not site_id:
+        row = (
+            db.query(ApMetrics)
+            .filter_by(ap_id=ap_id)
+            .order_by(ApMetrics.timestamp.desc())
+            .first()
+        )
+        site_id = row.site_id if row else None
+    if not site_id:
+        return []
+
+    client = MistClient()
+    devices, clients = await asyncio.gather(
+        client.get_site_devices_stats(site_id),
+        client.get_site_clients(site_id),
+    )
+    ap_by_mac = {
+        (d.get("mac") or "").lower(): {"id": d.get("id", ""), "name": d.get("name", "")}
+        for d in devices
+    }
+    ap_name = next((d.get("name", "") for d in devices if d.get("id") == ap_id), "")
+
+    result = []
+    for c in clients:
+        ap_info = ap_by_mac.get((c.get("ap_mac") or "").lower(), {})
+        resolved_ap_id = c.get("ap_id") or ap_info.get("id", "")
+        if resolved_ap_id != ap_id:
+            continue
+        c["ap_id"] = resolved_ap_id
+        c["ap_name"] = ap_info.get("name", "") or ap_name
+        result.append(c)
+    return result
+
+
+@router.get("/api/aps/{ap_id}/events")
+async def get_ap_events(ap_id: str, duration: str = "1d", db: Session = Depends(get_db)) -> dict[str, Any]:
+    """該当 AP のイベントを Mist events/search からリアルタイム取得して返す。
+    site_id / mac は DB（ap_metrics 最新レコード）から解決する。"""
+    row = (
+        db.query(ApMetrics)
+        .filter_by(ap_id=ap_id)
+        .order_by(ApMetrics.timestamp.desc())
+        .first()
+    )
+    if not row or not row.site_id or not row.mac:
+        return {"events": []}
+
+    norm_mac = row.mac.replace(":", "").replace("-", "").lower()
+    client = MistClient()
+    results = await client.get_device_events(row.site_id, mac=norm_mac, duration=duration)
+
+    events = []
+    for r in results:
+        # mac フィルターはサーバー側で効くが、念のためアプリ側でも照合する
+        ev_mac = (r.get("mac") or r.get("ap") or "").replace(":", "").lower()
+        if ev_mac and ev_mac != norm_mac:
+            continue
+        ts = r.get("timestamp")
+        events.append({
+            "timestamp": fmt_dt(datetime.fromtimestamp(ts, tz=timezone.utc)) if ts else None,
+            "type": r.get("type", ""),
+            "text": r.get("text") or r.get("reason") or "",
+        })
+    events.sort(key=lambda e: e["timestamp"] or "", reverse=True)
+    return {"events": events}
+
+
 def _build_band_dict(b: dict) -> dict:
     return {
         "channel": b.get("channel"),
@@ -99,8 +171,9 @@ async def get_ap_radio_config(
     if site_id:
         try:
             client = MistClient()
-            dp_fut = client.get_org_device_profiles(ORG_ID) if ORG_ID else _empty_list()
-            rf_fut = client.get_org_rf_templates(ORG_ID) if ORG_ID else _empty_list()
+            org_id = client.org_id
+            dp_fut = client.get_org_device_profiles(org_id) if org_id else _empty_list()
+            rf_fut = client.get_org_rf_templates(org_id) if org_id else _empty_list()
             ap_config, dp_list, rf_list, site_setting = await asyncio.gather(
                 client.get_ap_radio_config(site_id, ap_id),
                 dp_fut,
