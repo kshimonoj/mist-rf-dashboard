@@ -80,6 +80,8 @@ API_URL=http://localhost:8008
 > - Local Mac: `http://localhost:8008`
 > - Remote server: `http://<SERVER_IP>:8008`
 
+> **Note**: `CORS_ORIGINS` is a comma-separated list of allowed origins. Add your server's IP if accessing from a remote browser (e.g. `http://localhost:3007,http://192.168.1.100:3007`).
+
 ## Settings (GUI)
 
 Open the Settings panel by clicking the **Settings** button in the top-right corner of the dashboard.
@@ -194,6 +196,21 @@ SETTINGS_SECRET=your_random_secret_here  # openssl rand -hex 32
 When set, the endpoint requires an `X-Settings-Key: <secret>` header. The GUI
 will prompt for the Admin Key automatically. If `SETTINGS_SECRET` is empty, the
 endpoint is open — acceptable for localhost-only deployments.
+
+## Troubleshooting
+
+### Settings > ENVIRONMENTS shows "Loading..." forever
+If you are accessing the dashboard from a different machine (e.g. `http://192.168.x.x:3007`),
+you need to add your server's IP to `CORS_ORIGINS` in `.env`:
+
+```
+CORS_ORIGINS=http://localhost:3007,http://192.168.x.x:3007
+```
+
+Then restart the backend container:
+```bash
+docker compose restart backend
+```
 
 ## Tech Stack
 
