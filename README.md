@@ -49,8 +49,9 @@ Wi-Fi issues across all sites.
 
 ### Operations
 - **Tags**: attach free-form tags to APs and clients, and filter a dedicated view by tag
-- **Snapshot**: save and replay 72-hour metric snapshots (download/upload `.db` files for
-  offline review)
+- **Snapshot**: freeze and replay a full 72-hour metrics window at any point in time — save up
+  to 2 slots, then download/upload `.db` files to review the exact same graphs offline or on a
+  different machine, even after the live data has rolled off
 - **CSV Export**: automatic hourly export (AP metrics, SLE metrics, client metrics, floor map
   summary) with manual "Save Now", searchable/filterable History page
 - **Multi-Environment**: register multiple Mist orgs (e.g. per customer/site) and switch between
@@ -59,7 +60,9 @@ Wi-Fi issues across all sites.
   monitored-site filtering, all configurable via the browser
 - **Dark/Light Mode** and full timezone support for all timestamps
 
-![Tags and Insights history](docs/screenshots/05-client-list.png)
+![Snapshots](docs/screenshots/05-snapshots.png)
+
+![CSV Logs History](docs/screenshots/05b-history-csv.png)
 
 ## Requirements
 
