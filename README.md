@@ -11,7 +11,8 @@ Wi-Fi issues across all sites.
 ### Monitoring
 - **Site Overview**: All sites with AP online/offline status and online rate at a glance
 - **Site Detail**: SLE summary + sortable AP List and Client List, tabbed per site
-- **AP Detail**: Time-series graphs (1h/6h/24h/72h) for connected clients, channel utilization
+- **AP Detail**: Time-series graphs (1h/6h/24h/72h, plus an optional 30-day view) for connected
+  clients, channel utilization
   (total, TX, RX in BSS, Non-WiFi per band), noise floor, Tx power, channel, and bandwidth
 - **Client List / Client Detail**: Per-client RSSI, SNR, TX/RX rate, throughput, band/channel
   history with roaming markers
@@ -160,8 +161,30 @@ For the full list of regions, refer to the official documentation:
 | Client Polling Interval | How often to fetch the client list (minimum 5 minutes) |
 | Log Auto-Save Interval | How often to auto-save CSV logs (1–1440 minutes) |
 | Log Retention Days | How long to keep CSV log files (1–365 days) |
+| **30-Day Metrics History** | Off by default. When enabled, adds a `30d` option to the SLE and AP Detail graph selectors, and extends the local metrics retention (see below) |
 | Timezone | Timezone for all timestamps (e.g. `Asia/Tokyo`, `UTC`) |
 | Monitored Sites | Filter which sites to display and collect data for |
+
+### Metrics Retention & 30-Day History
+
+The raw AP/client metrics stored in `mist.db` are **not** covered by "Log Retention Days" (that
+setting only applies to exported CSV files). By default, raw metrics are pruned nightly
+(03:00) after **7 days** to keep the database small.
+
+Enabling **30-Day Metrics History** in Settings does two things:
+
+1. Raises local metrics retention to 30 days (nightly prune keeps the last 30 days instead of 7)
+2. Unlocks a `30d` button next to `1h / 6h / 24h / 72h` on:
+   - the SLE cards (Site Detail and AP Detail) — queried live from the Mist API, no local
+     storage impact
+   - AP Detail's METRICS HISTORY graphs — queried from the local database. To keep 30-day
+     graphs fast, this view is automatically returned as **hourly averages** instead of raw
+     samples (channel/bandwidth show the latest value per hour instead of an average)
+
+> **Note**: Turning this on increases database size, especially with many APs and a short
+> polling interval. A confirmation dialog is shown before enabling it. Turning it back off
+> shrinks retention to 7 days again on the next nightly prune — export any CSV logs you want to
+> keep before switching back.
 
 ## Switching Environments (Mist org)
 
