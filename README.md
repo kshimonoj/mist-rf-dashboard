@@ -1,38 +1,65 @@
 # mist-rf-dashboard
 
-A real-time monitoring dashboard for Juniper Mist wireless networks.
-Visualize AP metrics, radio configurations, and configuration hierarchy across all sites.
+A real-time monitoring and troubleshooting dashboard for Juniper Mist wireless networks.
+Visualize AP metrics, radio configurations, client experience (SLE), and automatically detect
+Wi-Fi issues across all sites.
+
+![Site Overview](docs/screenshots/01-home.png)
 
 ## Features
 
-- **Site Overview**: View all sites with AP online/offline status and online rate
-- **AP List**: Per-site AP inventory with real-time channel, utilization, and client data
-- **AP Detail**: Time-series graphs (1h/6h/24h/72h) for:
-  - Connected clients
-  - Channel utilization (total, TX, RX in BSS, Non-WiFi) per band (2.4G/5G/6G)
-  - Noise floor, Tx Power, Channel, Bandwidth
-- **Radio Config**: Current radio settings with configuration hierarchy detection
-  - Org / Site (RF Template) / Device Profile / Device level detection per band
-  - Configuration change detection and history
-- **Floor Map**: Interactive floor plan view with AP overlay
-  - Per-floor AP placement with channel-based color coding
-  - Co-channel interference summary per band (2.4GHz / 5GHz / 6GHz)
-  - AP details on hover (channel, bandwidth, power, noise floor, clients)
-  - Disconnected APs shown with reduced opacity
-- **Snapshot**: Save and replay 72-hour metric snapshots
-  - Download/upload snapshot files (.db) for offline review
-- **CSV Export**: Automatic hourly log export with manual save option
-  ### CSV Logs
-  - **AP Metrics**: channel, power, noise floor, utilization per radio band + model
-  - **Floor Map Summary**: per-floor co-channel interference summary
-    (band / channel / AP count / AP list / interference flag)
-  - Auto-save on interval, manual save via "Save Now"
-  - History page: CSV Logs tab shown first, sorted by timestamp descending
-- **Settings (GUI)**: Configure API credentials, region, polling interval, and more via the browser UI
-- **Dark/Light Mode**: Toggle via UI
-- **Timezone Support**: Configurable timezone for all timestamps
-- **Polling Control**: Adjustable polling interval via UI (no restart required)
-- **Site Filtering**: Monitor specific sites only (useful for large-scale environments)
+### Monitoring
+- **Site Overview**: All sites with AP online/offline status and online rate at a glance
+- **Site Detail**: SLE summary + sortable AP List and Client List, tabbed per site
+- **AP Detail**: Time-series graphs (1h/6h/24h/72h) for connected clients, channel utilization
+  (total, TX, RX in BSS, Non-WiFi per band), noise floor, Tx power, channel, and bandwidth
+- **Client List / Client Detail**: Per-client RSSI, SNR, TX/RX rate, throughput, band/channel
+  history with roaming markers
+- **Floor Map**: Interactive floor plan with AP overlay, channel-based color coding, and
+  co-channel interference summary per band
+
+![Site Detail with SLE](docs/screenshots/02-site-detail.png)
+
+### Client Experience (SLE)
+- Capacity / Throughput / Coverage / Time to Connect / Roaming / AP Availability, at both the
+  site level and per-AP level
+- Capacity classifier breakdown (Wi-Fi interference, non-Wi-Fi interference, client count,
+  client usage) to pinpoint *why* a score is low
+
+### Radio Configuration
+- Configuration hierarchy detection per band: Org / Site (RF Template) / Device Profile / Device
+- Automatic change detection and history (channel, bandwidth, Tx power, enable/disable)
+
+![AP Detail](docs/screenshots/03-ap-detail.png)
+
+### Insights — Automated Issue Detection
+- **Sticky Client**: clients staying on a weak-signal AP instead of roaming
+- **2.4GHz stuck**: dual-band clients stuck on 2.4GHz (band steering failure)
+- **High Retry**: abnormal TX retry rate per client
+- **Co-channel interference**: AP pairs on the same channel with high mutual interference
+- **Roaming flapping**: clients bouncing between APs too frequently
+- **Config Change Impact**: automatic before/after comparison (SLE, utilization, retry rate)
+  around every radio configuration change, with an Improved / Degraded / Neutral verdict
+- **Recommendations**: rule-based optimization suggestions per AP (e.g. free channel
+  suggestions for co-channel conflicts)
+- Active / History view — issues are tracked from first detection to resolution, not just a
+  point-in-time snapshot
+
+![Insights](docs/screenshots/04-insights.png)
+
+### Operations
+- **Tags**: attach free-form tags to APs and clients, and filter a dedicated view by tag
+- **Snapshot**: save and replay 72-hour metric snapshots (download/upload `.db` files for
+  offline review)
+- **CSV Export**: automatic hourly export (AP metrics, SLE metrics, client metrics, floor map
+  summary) with manual "Save Now", searchable/filterable History page
+- **Multi-Environment**: register multiple Mist orgs (e.g. per customer/site) and switch between
+  them from the GUI — no container restart required
+- **Settings (GUI)**: API credentials, region, polling interval, log retention, timezone, and
+  monitored-site filtering, all configurable via the browser
+- **Dark/Light Mode** and full timezone support for all timestamps
+
+![Tags and Insights history](docs/screenshots/05-client-list.png)
 
 ## Requirements
 
@@ -72,19 +99,31 @@ MIST_BASE_URL=https://api.mist.com/api/v1
 POLLING_INTERVAL_SECONDS=300
 TIMEZONE=Asia/Tokyo
 API_URL=http://localhost:8008
+CORS_ORIGINS=http://localhost:3007
 ```
 
-> **Note**: `.env` values are seeded into the database on first startup. After that, the GUI takes precedence. Use `docker compose down && docker compose up -d` (not `restart`) to reload `.env`.
+> **Note**: `.env` values are seeded into the database on first startup. After that, the GUI
+> takes precedence. Use `docker compose down && docker compose up -d` (not `restart`) to reload
+> `.env`.
 
 > **Note**: `API_URL` is the backend URL as seen from the browser:
-> - Local Mac: `http://localhost:8008`
+> - Local machine: `http://localhost:8008`
 > - Remote server: `http://<SERVER_IP>:8008`
 
-> **Note**: `CORS_ORIGINS` is a comma-separated list of allowed origins. Add your server's IP if accessing from a remote browser (e.g. `http://localhost:3007,http://192.168.1.100:3007`).
+> **Note**: `CORS_ORIGINS` is a comma-separated list of allowed origins. Add your server's IP if
+> accessing from a remote browser (e.g. `http://localhost:3007,http://192.168.1.100:3007`).
 
 ## Settings (GUI)
 
-Open the Settings panel by clicking the **Settings** button in the top-right corner of the dashboard.
+Open the Settings panel from the **Settings** button in the header.
+
+![Settings](docs/screenshots/06-settings.png)
+
+### Environments (multi-org support)
+
+Register one or more Mist environments (org + token + region) and switch the active one at any
+time. Switching clears the locally cached metrics/insights for a clean start in the new
+environment; tags are preserved across environments.
 
 ### API Credentials
 
@@ -114,45 +153,19 @@ For the full list of regions, refer to the official documentation:
 
 | Setting | Description |
 |---------|-------------|
-| Polling Interval | How often to fetch data from the Mist API (30–3600 seconds) |
+| Polling Interval | How often to fetch AP data from the Mist API (30–3600 seconds) |
+| Client Polling Interval | How often to fetch the client list (minimum 5 minutes) |
 | Log Auto-Save Interval | How often to auto-save CSV logs (1–1440 minutes) |
 | Log Retention Days | How long to keep CSV log files (1–365 days) |
 | Timezone | Timezone for all timestamps (e.g. `Asia/Tokyo`, `UTC`) |
 | Monitored Sites | Filter which sites to display and collect data for |
 
-## 複数環境での設定
+## Switching Environments (Mist org)
 
-### API_URL と CORS_ORIGINS について
-
-フロントエンドとバックエンドの通信設定は、`.env` で環境に合わせて変更します。
-
-#### ローカル開発（Macbook）
-```env
-API_URL=http://localhost:8008
-CORS_ORIGINS=http://localhost:3007
-```
-
-#### リモートサーバー（Ubuntu など）
-```env
-API_URL=http://192.168.19.150:8008
-CORS_ORIGINS=http://localhost:3007,http://192.168.19.150:3007
-```
-
-#### 複数サイトでの運用
-```env
-API_URL=http://mist-dashboard.example.com:8008
-CORS_ORIGINS=http://localhost:3007,http://mist-dashboard.example.com:3007,https://backup.example.com:3007
-```
-
-**注:** `CORS_ORIGINS` は複数のオリジンをカンマ区切りで指定できます。
-
-## Switching Environments
-
-To switch to a different Mist organization:
+You can switch to a different Mist organization directly from the Settings GUI (Environments
+section) — no restart needed. Alternatively, edit `.env` and reload:
 
 ```bash
-# 1. Use the GUI Settings page to update credentials (no restart needed)
-# OR edit .env and restart:
 docker compose down
 docker compose up -d
 ```
@@ -171,9 +184,9 @@ docker compose up -d
 All data is stored in the `./data/` directory:
 ```
 data/
-├── mist.db          # SQLite database (metrics, settings, credentials)
-├── logs/            # Auto-saved CSV logs
-└── snapshots/       # Snapshot database files (max 2 slots)
+├── mist.db          # SQLite database (metrics, settings, credentials, tags, insights)
+├── logs/             # Auto-saved CSV logs (AP / SLE / client metrics, floor map summary)
+└── snapshots/        # Snapshot database files (max 2 slots)
 ```
 
 ## Security Notes
@@ -181,27 +194,29 @@ data/
 - `.env` is excluded from git via `.gitignore` — **do not commit it**
 - `data/` (SQLite database) is also excluded — **do not commit it**
 - **Never** write your API token or Org ID directly in code or README files
-- API tokens stored in the database are masked (`sk-t****`) in the GUI and API responses
+- API tokens stored in the database are masked (`abcd****`) in the GUI and API responses
+- `mist_base_url` is restricted to `*.mist.com` to prevent SSRF / token exfiltration
 - Use environment-specific `.env` files (e.g. `.env.prod`) and keep them local
 
 ### Protecting the Credentials API
 
-The `POST /api/credentials` endpoint modifies the stored Mist API token. If your backend
-port (8008) is reachable by untrusted clients, set `SETTINGS_SECRET` in `.env`:
+The `POST /api/credentials` endpoint modifies stored Mist API tokens. If your backend port
+(8008) is reachable by untrusted clients, set `SETTINGS_SECRET` in `.env`:
 
 ```env
 SETTINGS_SECRET=your_random_secret_here  # openssl rand -hex 32
 ```
 
-When set, the endpoint requires an `X-Settings-Key: <secret>` header. The GUI
-will prompt for the Admin Key automatically. If `SETTINGS_SECRET` is empty, the
-endpoint is open — acceptable for localhost-only deployments.
+When set, the endpoint requires an `X-Settings-Key: <secret>` header. The GUI will prompt for
+the Admin Key automatically. If `SETTINGS_SECRET` is empty, the endpoint is open — acceptable
+for localhost-only deployments.
 
 ## Troubleshooting
 
 ### Settings > ENVIRONMENTS shows "Loading..." forever
+
 If you are accessing the dashboard from a different machine (e.g. `http://192.168.x.x:3007`),
-you need to add your server's IP to `CORS_ORIGINS` in `.env`:
+add your server's IP to `CORS_ORIGINS` in `.env`:
 
 ```
 CORS_ORIGINS=http://localhost:3007,http://192.168.x.x:3007
@@ -211,6 +226,16 @@ Then restart the backend container:
 ```bash
 docker compose restart backend
 ```
+
+### After `git pull`, the backend fails with `no such column: ...`
+
+A new release added columns to an existing table. Run the migration manually:
+
+```bash
+docker compose exec backend python3 -c "from database import migrate_db; migrate_db(); print('done')"
+```
+
+If the container was not running yet, start it first, then run the command above.
 
 ## Tech Stack
 
