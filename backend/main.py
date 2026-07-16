@@ -14,7 +14,7 @@ from database import Base, SessionLocal, engine, migrate_db
 from models import AppSettings, Credentials
 from routers import aps, clients, credentials, floor_map, insights, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots, tags
 import scheduler as sched_module
-from scheduler import poll_all_sites, poll_clients, save_hourly_logs, scheduler
+from scheduler import poll_all_sites, poll_clients, prune_old_metrics, save_hourly_logs, scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,6 +90,18 @@ def _init_app_settings() -> None:
         sched_module._client_polling_interval_seconds = client_interval
         settings_module._current_client_polling = client_interval
         logger.info(f"Client polling interval: {client_interval}s")
+
+        retention = row.metrics_retention_days
+        if retention is None:
+            retention = 7
+            row.metrics_retention_days = retention
+            db.commit()
+        long_history = bool(row.long_history_enabled)
+        sched_module._metrics_retention_days = retention
+        sched_module._long_history_enabled = long_history
+        settings_module._current_metrics_retention = retention
+        settings_module._long_history_enabled = long_history
+        logger.info(f"Metrics retention: {retention}d (long_history={long_history})")
     except Exception as e:
         logger.warning(f"_init_app_settings failed: {e}")
     finally:
@@ -108,6 +120,7 @@ async def lifespan(app: FastAPI):
     client_interval = sched_module._client_polling_interval_seconds
     scheduler.add_job(poll_clients, "interval", seconds=client_interval, id="poll_clients")
     scheduler.add_job(save_hourly_logs, "cron", minute=0, id="hourly_csv_log", misfire_grace_time=600)
+    scheduler.add_job(prune_old_metrics, "cron", hour=3, minute=0, id="prune_metrics", misfire_grace_time=3600)
     scheduler.start()
     yield
     scheduler.shutdown()

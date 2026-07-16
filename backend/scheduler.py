@@ -2,13 +2,15 @@ import asyncio
 import csv
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from database import SessionLocal
+from database import SessionLocal, engine
 from mist.client import MistClient, SLE_METRICS, parse_sle_metric
 from models import AppSettings, ApMetrics, ClientMetrics, RadioConfigChange, RadioConfigCurrent, Snapshot
 from radio_helpers import detect_band_source, overall_source
@@ -21,6 +23,8 @@ _log_retention_days: int = 30
 _app_timezone: str = "Asia/Tokyo"
 _monitored_site_ids: list[str] = []
 _client_polling_interval_seconds: int = 600
+_metrics_retention_days: int = 7
+_long_history_enabled: bool = False
 last_log_saved_at: datetime = datetime.now(timezone.utc)
 last_client_log_saved_at: datetime = datetime.now(timezone.utc)
 
@@ -226,6 +230,47 @@ def rotate_logs(retention_days: int) -> None:
         db.rollback()
     finally:
         db.close()
+
+
+def prune_old_metrics() -> None:
+    """保持日数を超えた ap_metrics / client_metrics を削除し、VACUUM で容量を回収する。
+    long_history_enabled=True なら _metrics_retention_days（通常30）、False なら 7 日を使用。"""
+    retention_days = _metrics_retention_days if _long_history_enabled else 7
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    started = time.monotonic()
+    db: Session = SessionLocal()
+    try:
+        deleted_ap = (
+            db.query(ApMetrics)
+            .filter(ApMetrics.timestamp < cutoff)
+            .delete(synchronize_session=False)
+        )
+        deleted_client = (
+            db.query(ClientMetrics)
+            .filter(ClientMetrics.timestamp < cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+    except Exception as e:
+        logger.error(f"[PRUNE] Failed: {e}")
+        db.rollback()
+        return
+    finally:
+        db.close()
+
+    try:
+        # VACUUM はトランザクション外でのみ実行可能
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text("VACUUM"))
+    except Exception as e:
+        logger.error(f"[PRUNE] VACUUM failed: {e}")
+
+    elapsed = time.monotonic() - started
+    logger.info(
+        f"[PRUNE] retention={retention_days}d "
+        f"deleted ap_metrics={deleted_ap} client_metrics={deleted_client} "
+        f"({elapsed:.1f}s)"
+    )
 
 
 async def poll_all_sites():

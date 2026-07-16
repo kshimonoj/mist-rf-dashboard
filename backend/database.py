@@ -79,6 +79,12 @@ def migrate_db():
                 ("last_insights_analyzed_at", "DATETIME"),
             ])
 
+            # app_settings: メトリクス保持ポリシー カラム追加
+            _add_columns(conn, "app_settings", [
+                ("metrics_retention_days", "INTEGER DEFAULT 7"),
+                ("long_history_enabled", "BOOLEAN DEFAULT 0"),
+            ])
+
             # insights: 検知履歴の蓄積方式へ移行（detected_at → first_detected_at + 追加カラム）
             _rename_columns(conn, "insights", [
                 ("detected_at", "first_detected_at"),

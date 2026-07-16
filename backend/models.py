@@ -170,6 +170,8 @@ class AppSettings(Base):
     monitored_site_ids = Column(Text, nullable=True)  # JSON array string
     client_polling_interval_seconds = Column(Integer, default=600)
     last_insights_analyzed_at = Column(DateTime, nullable=True)
+    metrics_retention_days = Column(Integer, default=7)
+    long_history_enabled = Column(Boolean, default=False)
 
 
 class Insight(Base):

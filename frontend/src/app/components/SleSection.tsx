@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import useSWR from "swr";
-import { fetchSiteSle, fetchApSle, SleData, SleMetricData } from "@/lib/api";
+import { fetchSiteSle, fetchApSle, fetchSettings, Settings, SleData, SleMetricData } from "@/lib/api";
 import clsx from "clsx";
 
-type Duration = "1h" | "6h" | "24h";
+type Duration = "1h" | "6h" | "24h" | "30d";
 
 function scoreColor(score: number | null | undefined): string {
   if (score == null) return "var(--text-muted)";
@@ -38,6 +38,11 @@ interface Props {
 export default function SleSection({ mode, id }: Props) {
   const [duration, setDuration] = useState<Duration>("1h");
 
+  const { data: settings } = useSWR<Settings>("settings", fetchSettings);
+  const durations: Duration[] = settings?.long_history_enabled
+    ? ["1h", "6h", "24h", "30d"]
+    : ["1h", "6h", "24h"];
+
   const { data, isLoading } = useSWR<SleData>(
     `sle-${mode}-${id}-${duration}`,
     () => (mode === "site" ? fetchSiteSle(id, duration) : fetchApSle(id, duration)),
@@ -58,7 +63,7 @@ export default function SleSection({ mode, id }: Props) {
           SLE — SERVICE LEVEL EXPERIENCE
         </h2>
         <div className="flex gap-2">
-          {(["1h", "6h", "24h"] as Duration[]).map((d) => (
+          {durations.map((d) => (
             <button
               key={d}
               onClick={() => setDuration(d)}

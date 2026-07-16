@@ -291,6 +291,8 @@ export interface Settings {
   timezone: string;
   monitored_site_ids: string[];
   client_polling_interval_seconds: number;
+  metrics_retention_days: number;
+  long_history_enabled: boolean;
 }
 
 export interface SiteSimple {
@@ -448,7 +450,7 @@ export const getFloorMapImageUrl = (siteId: string, mapId: string) =>
   `${API_BASE}/api/floor-map/sites/${siteId}/maps/${mapId}/image`;
 
 export async function updateSettings(
-  body: Partial<Pick<Settings, "polling_interval_seconds" | "log_interval_minutes" | "log_retention_days" | "timezone" | "monitored_site_ids" | "client_polling_interval_seconds">>
+  body: Partial<Pick<Settings, "polling_interval_seconds" | "log_interval_minutes" | "log_retention_days" | "timezone" | "monitored_site_ids" | "client_polling_interval_seconds" | "metrics_retention_days" | "long_history_enabled">>
 ): Promise<Settings> {
   const res = await fetch(`${API_BASE}/api/settings`, {
     method: "POST",

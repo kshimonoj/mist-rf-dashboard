@@ -7,7 +7,7 @@ import PollNowButton from "@/app/components/PollNowButton";
 import { Fragment, useState } from "react";
 import useSWR from "swr";
 import { Line } from "recharts";
-import { fetchApMetrics, fetchApRadioConfig, ApMetric, ApRadioConfig } from "@/lib/api";
+import { fetchApMetrics, fetchApRadioConfig, fetchSettings, ApMetric, ApRadioConfig, Settings } from "@/lib/api";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 import clsx from "clsx";
@@ -20,7 +20,7 @@ import ApClientsSection from "@/app/components/ApClientsSection";
 import ApEventsSection from "@/app/components/ApEventsSection";
 import { ImpactPanel } from "@/app/components/ConfigImpactPanel";
 
-type HourRange = 1 | 6 | 24 | 72;
+type HourRange = 1 | 6 | 24 | 72 | 720;
 
 export default function ApDetailPage({
   params,
@@ -37,6 +37,11 @@ export default function ApDetailPage({
     `ap-metrics-${apId}-${hours}`,
     () => fetchApMetrics(apId, hours)
   );
+
+  const { data: settings } = useSWR<Settings>("settings", fetchSettings);
+  const hourRanges: HourRange[] = settings?.long_history_enabled
+    ? [1, 6, 24, 72, 720]
+    : [1, 6, 24, 72];
 
   const { data: radioConfig } = useSWR(
     `ap-radio-${apId}`,
@@ -178,7 +183,7 @@ export default function ApDetailPage({
             METRICS HISTORY
           </h2>
           <div className="flex gap-2">
-            {([1, 6, 24, 72] as HourRange[]).map((h) => (
+            {hourRanges.map((h) => (
               <button
                 key={h}
                 onClick={() => setHours(h)}
@@ -189,7 +194,7 @@ export default function ApDetailPage({
                     : { borderColor: "var(--chart-grid)", color: "var(--text-muted)" }
                 }
               >
-                {h}h
+                {h === 720 ? "30d" : `${h}h`}
               </button>
             ))}
           </div>

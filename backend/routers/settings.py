@@ -20,6 +20,8 @@ _current_retention_days: int = 30
 _current_timezone: str = "Asia/Tokyo"
 _monitored_site_ids: list[str] = []
 _current_client_polling: int = 600
+_current_metrics_retention: int = 7
+_long_history_enabled: bool = False
 
 MIN_CLIENT_POLLING = 300
 
@@ -31,6 +33,8 @@ class SettingsUpdate(BaseModel):
     timezone: Optional[str] = None
     monitored_site_ids: Optional[list[str]] = None
     client_polling_interval_seconds: Optional[int] = None
+    metrics_retention_days: Optional[int] = Field(None, ge=1, le=365)
+    long_history_enabled: Optional[bool] = None
 
 
 @router.get("/api/settings")
@@ -42,12 +46,14 @@ async def get_settings() -> dict[str, Any]:
         "timezone": _current_timezone,
         "monitored_site_ids": _monitored_site_ids,
         "client_polling_interval_seconds": _current_client_polling,
+        "metrics_retention_days": _current_metrics_retention,
+        "long_history_enabled": _long_history_enabled,
     }
 
 
 @router.post("/api/settings")
 async def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)) -> dict[str, Any]:
-    global _current_polling, _current_log_minutes, _current_retention_days, _current_timezone, _monitored_site_ids, _current_client_polling
+    global _current_polling, _current_log_minutes, _current_retention_days, _current_timezone, _monitored_site_ids, _current_client_polling, _current_metrics_retention, _long_history_enabled
 
     if body.client_polling_interval_seconds is not None:
         if body.client_polling_interval_seconds < MIN_CLIENT_POLLING:
@@ -102,6 +108,25 @@ async def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)) -
             row.monitored_site_ids = json.dumps(body.monitored_site_ids)
             db.commit()
 
+    if body.long_history_enabled is not None or body.metrics_retention_days is not None:
+        if body.long_history_enabled is not None:
+            _long_history_enabled = body.long_history_enabled
+            if body.long_history_enabled:
+                # 有効化: 保持日数が未指定なら自動で30日に
+                _current_metrics_retention = body.metrics_retention_days or 30
+            else:
+                # 無効化: 明示的に7日へ自動縮小
+                _current_metrics_retention = 7
+        elif body.metrics_retention_days is not None:
+            _current_metrics_retention = body.metrics_retention_days
+        sched_module._metrics_retention_days = _current_metrics_retention
+        sched_module._long_history_enabled = _long_history_enabled
+        row = db.query(AppSettings).first()
+        if row:
+            row.metrics_retention_days = _current_metrics_retention
+            row.long_history_enabled = _long_history_enabled
+            db.commit()
+
     return {
         "polling_interval_seconds": _current_polling,
         "log_interval_minutes": _current_log_minutes,
@@ -109,4 +134,6 @@ async def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)) -
         "timezone": _current_timezone,
         "monitored_site_ids": _monitored_site_ids,
         "client_polling_interval_seconds": _current_client_polling,
+        "metrics_retention_days": _current_metrics_retention,
+        "long_history_enabled": _long_history_enabled,
     }

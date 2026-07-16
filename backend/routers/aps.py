@@ -20,6 +20,50 @@ async def _empty_list() -> list:
     return []
 
 
+# hours がこの値以上（実質 30d ボタンのみ）は生データではなく1時間バケット集計を返す
+AGGREGATE_THRESHOLD_HOURS = 168
+
+# 1時間平均を取る数値系フィールド
+_AVG_FIELDS = [
+    "num_clients",
+    "radio_24_utilization", "radio_24_util_tx", "radio_24_util_rx_in_bss",
+    "radio_24_util_non_wifi", "radio_24_noise_floor", "radio_24_tx_power",
+    "radio_5_utilization", "radio_5_util_tx", "radio_5_util_rx_in_bss",
+    "radio_5_util_non_wifi", "radio_5_noise_floor", "radio_5_tx_power",
+    "radio_6_utilization", "radio_6_util_tx", "radio_6_util_rx_in_bss",
+    "radio_6_util_non_wifi", "radio_6_noise_floor", "radio_6_tx_power",
+]
+
+# バケット内の最新レコードの値をそのまま使う設定値系フィールド
+_LAST_FIELDS = [
+    "radio_24_channel", "radio_24_bandwidth",
+    "radio_5_channel", "radio_5_bandwidth",
+    "radio_6_channel", "radio_6_bandwidth",
+    "status",
+]
+
+
+def _aggregate_hourly(rows: list[ApMetrics]) -> list[dict[str, Any]]:
+    """timestamp 昇順の生レコードを1時間バケットに集計する。
+    数値系は AVG、channel/bandwidth/status はバケット内最新値。キー構成は生データと同一。"""
+    buckets: dict[datetime, list[ApMetrics]] = {}
+    for r in rows:
+        b = r.timestamp.replace(minute=0, second=0, microsecond=0)
+        buckets.setdefault(b, []).append(r)
+
+    out: list[dict[str, Any]] = []
+    for b, rs in buckets.items():
+        item: dict[str, Any] = {"timestamp": fmt_dt(b)}
+        for f in _AVG_FIELDS:
+            vals = [getattr(r, f) for r in rs if getattr(r, f) is not None]
+            item[f] = round(sum(vals) / len(vals), 1) if vals else None
+        last = rs[-1]
+        for f in _LAST_FIELDS:
+            item[f] = getattr(last, f)
+        out.append(item)
+    return out
+
+
 @router.get("/api/aps/{ap_id}/metrics")
 async def get_ap_metrics(ap_id: str, hours: int = 24, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -29,6 +73,8 @@ async def get_ap_metrics(ap_id: str, hours: int = 24, db: Session = Depends(get_
         .order_by(ApMetrics.timestamp.asc())
         .all()
     )
+    if hours >= AGGREGATE_THRESHOLD_HOURS:
+        return _aggregate_hourly(rows)
     return [
         {
             "timestamp": fmt_dt(r.timestamp),

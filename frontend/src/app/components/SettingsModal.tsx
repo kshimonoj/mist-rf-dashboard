@@ -36,6 +36,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
     data ? Math.round(data.client_polling_interval_seconds / 60) : ""
   );
   const [timezone, setTimezone] = useState<string>(data?.timezone ?? "");
+  const [longHistory, setLongHistory] = useState<boolean | null>(data?.long_history_enabled ?? null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [siteSearch, setSiteSearch] = useState("");
   const [saving, setSaving] = useState(false);
@@ -49,6 +50,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
       if (retentionDays === "") setRetentionDays(data.log_retention_days);
       if (clientPollMinutes === "") setClientPollMinutes(Math.round(data.client_polling_interval_seconds / 60));
       if (timezone === "") setTimezone(data.timezone ?? "Asia/Tokyo");
+      if (longHistory === null) setLongHistory(data.long_history_enabled);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
@@ -92,6 +94,12 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const selectAll = () => setSelectedIds(new Set(allSites?.map((s) => s.id) ?? []));
   const deselectAll = () => setSelectedIds(new Set());
 
+  const toggleLongHistory = () => {
+    const next = !(longHistory ?? false);
+    if (next && !window.confirm("250AP環境ではDBが数GB規模になりえます。よろしいですか？")) return;
+    setLongHistory(next);
+  };
+
   const handleApply = async () => {
     if (!canApply) return;
     const clientPollSeconds = Number(clientPollMinutes) * 60;
@@ -112,6 +120,10 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
         client_polling_interval_seconds: clientPollSeconds,
         timezone: timezone.trim(),
         monitored_site_ids: monitoredIds,
+        // 変更時のみ送信（未変更時に retention の自動再設定を避ける）
+        ...(longHistory !== null && longHistory !== data?.long_history_enabled
+          ? { long_history_enabled: longHistory }
+          : {}),
       });
       setGlobalTimezone(result.timezone);
       await mutate();
@@ -260,6 +272,43 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
             {data && (
               <p className="text-xs mt-1 font-mono" style={{ color: "var(--text-muted)" }}>
                 現在: {Math.round(data.client_polling_interval_seconds / 60)} 分（{data.client_polling_interval_seconds} 秒）
+              </p>
+            )}
+          </div>
+
+          {/* 30-Day Metrics History */}
+          <div>
+            <label className="block text-sm font-mono mb-2" style={{ color: "var(--text-secondary)" }}>
+              30-Day Metrics History
+            </label>
+            <div className="flex items-center gap-3">
+              <button
+                role="switch"
+                aria-checked={longHistory ?? false}
+                onClick={toggleLongHistory}
+                className="relative w-11 h-6 rounded-full border transition-all flex-shrink-0"
+                style={{
+                  borderColor: longHistory ? "var(--cyan)" : "var(--chart-grid)",
+                  backgroundColor: longHistory ? "rgba(0,212,255,0.25)" : "var(--bg-hover)",
+                }}
+              >
+                <span
+                  className="absolute top-0.5 rounded-full transition-all"
+                  style={{
+                    width: "18px",
+                    height: "18px",
+                    left: longHistory ? "22px" : "3px",
+                    backgroundColor: longHistory ? "var(--cyan)" : "var(--text-muted)",
+                  }}
+                />
+              </button>
+              <span className="text-sm font-mono" style={{ color: longHistory ? "var(--cyan)" : "var(--text-muted)" }}>
+                {longHistory ? "Enabled" : "Disabled"}
+              </span>
+            </div>
+            {data && (
+              <p className="text-xs mt-1 font-mono" style={{ color: "var(--text-muted)" }}>
+                現在: {data.metrics_retention_days} 日間保持中 — 有効化で30日保持＋各画面に 30d ボタンを表示
               </p>
             )}
           </div>
