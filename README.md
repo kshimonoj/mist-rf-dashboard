@@ -263,6 +263,44 @@ docker compose exec backend python3 -c "from database import migrate_db; migrate
 
 If the container was not running yet, start it first, then run the command above.
 
+## Mist API Reference
+
+This dashboard is built entirely on the Juniper Mist REST API. For reference, here are the
+endpoints in use:
+
+### Org / Site
+| Endpoint | Purpose |
+|---|---|
+| `GET /orgs/{org_id}/sites` | List sites |
+| `GET /orgs/{org_id}/rftemplates` | RF Templates (for radio config hierarchy detection) |
+| `GET /orgs/{org_id}/deviceprofiles` | Device Profiles (for radio config hierarchy detection) |
+| `GET /sites/{site_id}/setting` | Site settings (RF Template assignment) |
+
+### Access Points
+| Endpoint | Purpose |
+|---|---|
+| `GET /sites/{site_id}/devices?type=ap&limit=1000` | Bulk AP configuration (paginated via `X-Page-Total`) |
+| `GET /sites/{site_id}/devices/{ap_id}` | Single AP configuration detail |
+| `GET /sites/{site_id}/stats/devices?type=ap` | AP real-time stats (channel, utilization, noise floor, etc.) |
+| `GET /sites/{site_id}/devices/events/search?duration=` | AP events (reboot, DFS, etc.) |
+
+### Clients
+| Endpoint | Purpose |
+|---|---|
+| `GET /sites/{site_id}/stats/clients` | Currently connected clients with real-time RSSI/SNR/rates. **Note**: `limit` and `ap_mac` query parameters are documented but do not filter/paginate in practice — the endpoint always returns the full site-wide list. |
+| `GET /sites/{site_id}/clients/search` | Historical client connection search. `limit` and `ap_mac` filtering work correctly here, but RSSI/SNR/rate fields are not included. |
+
+### SLE (Service Level Experience)
+| Endpoint | Purpose |
+|---|---|
+| `GET /sites/{site_id}/sle/site/{site_id}/metric/{metric}/summary?duration=` | Site-level SLE (capacity, throughput, coverage, time-to-connect, roaming, ap-availability) |
+| `GET /sites/{site_id}/sle/ap/{ap_id}/metric/{metric}/summary?duration=` | AP-level SLE (same 6 metrics) |
+| `GET /sites/{site_id}/sle/site/{site_id}/metric/{metric}/classifier/{classifier}/summary?duration=` | Classifier breakdown (e.g. wifi-interference, non-wifi-interference for the capacity metric) |
+
+> All endpoints are called with `Authorization: Token <api_token>`. See the [official Mist API
+> reference](https://www.juniper.net/documentation/us/en/software/mist/api/http/api/introduction)
+> for full parameter documentation.
+
 ## Tech Stack
 
 - **Frontend**: Next.js 14, TypeScript, Tailwind CSS, Recharts, SWR
