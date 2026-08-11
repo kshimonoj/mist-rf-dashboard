@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, Text
+from sqlalchemy import Boolean, Column, Index, Integer, String, Float, DateTime, Text
 from sqlalchemy.sql import func
 from database import Base
 
@@ -192,6 +192,34 @@ class Insight(Base):
     detail = Column(Text, nullable=True)
     recommendation = Column(Text, nullable=True)
     metrics_json = Column(Text, nullable=True)   # 補足データ(JSON文字列)
+
+
+class ApEvent(Base):
+    __tablename__ = "ap_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_timestamp = Column(DateTime, index=True)
+    fetched_at = Column(DateTime, default=func.now())
+    site_id = Column(String, index=True)
+    site_name = Column(String, nullable=True)
+    ap_mac = Column(String, index=True)
+    ap_id = Column(String, nullable=True)
+    ap_name = Column(String, nullable=True)
+    event_type = Column(String, index=True)
+    reason = Column(String, nullable=True)
+    band = Column(String, nullable=True)
+    channel = Column(Integer, nullable=True)
+    pre_channel = Column(Integer, nullable=True)
+    bandwidth = Column(Integer, nullable=True)
+    pre_bandwidth = Column(Integer, nullable=True)
+    raw_json = Column(Text, nullable=True)
+
+
+Index(
+    "idx_ap_events_dedup",
+    ApEvent.site_id, ApEvent.ap_mac, ApEvent.event_type, ApEvent.event_timestamp,
+    unique=True,
+)
 
 
 class Credentials(Base):

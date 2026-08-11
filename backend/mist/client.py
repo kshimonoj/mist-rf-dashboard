@@ -12,6 +12,9 @@ RADIO_KEYWORDS = ["radio", "rf_template", "band_24", "band_5", "band_6",
 
 SLE_METRICS = ["capacity", "throughput", "coverage", "time-to-connect", "roaming", "ap-availability"]
 
+RESTART_EVENT_TYPES = ["AP_RESTARTED", "AP_RESTART_BY_USER"]
+NOTABLE_EVENT_TYPES = RESTART_EVENT_TYPES + ["AP_RADAR_DETECTED", "AP_PORT_DOWN"]
+
 
 def _sum_sle_samples(samples: dict) -> tuple[float, float]:
     """samples は {"total": [...], "degraded": [...]} 形式。total==1 はnull番兵として除外。"""
@@ -232,19 +235,31 @@ class MistClient:
         )
         return result if isinstance(result, dict) else {}
 
-    async def get_device_events(
-        self, site_id: str, mac: Optional[str] = None,
-        duration: str = "1d", limit: int = 200,
-    ) -> list[dict]:
-        """GET /sites/{site_id}/devices/events/search で AP イベントを取得する。
-        mac 指定でサーバー側フィルターが効く（コロンなし小文字）。"""
+    async def get_site_device_events(self, site_id: str, duration: str = "1d", limit: int = 100) -> list[dict]:
+        """GET /sites/{site_id}/devices/events/search を duration/limit でページネーションしながら全件取得する。"""
         params: dict = {"duration": duration, "limit": limit, "device_type": "ap"}
-        if mac:
-            params["mac"] = mac
         result = await self._get(f"/sites/{site_id}/devices/events/search", params=params)
-        if isinstance(result, dict) and "results" in result:
-            return result["results"]
-        return result if isinstance(result, list) else []
+        if isinstance(result, dict):
+            events = list(result.get("results") or [])
+            total = result.get("total", len(events))
+        elif isinstance(result, list):
+            events = result
+            total = len(events)
+        else:
+            return []
+
+        page = 2
+        while len(events) < total and page <= 20:
+            page_result = await self._get(
+                f"/sites/{site_id}/devices/events/search",
+                params={**params, "page": page},
+            )
+            page_events = page_result.get("results") if isinstance(page_result, dict) else page_result
+            if not page_events:
+                break
+            events.extend(page_events)
+            page += 1
+        return events
 
     async def get_site_clients(self, site_id: str) -> list[dict]:
         """GET /sites/{site_id}/stats/clients?wired=false で無線クライアント一覧を取得する。

@@ -1,13 +1,13 @@
 "use client";
 
-import { ArrowLeft, Download, Home, RefreshCw, Trash2, FileDown, Camera, Eye, Map } from "lucide-react";
+import { ArrowLeft, Download, Home, RefreshCw, Trash2, FileDown, Camera, Eye, Map, History } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import {
   fetchSnapshots, fetchLogs, fetchSites, fetchSiteAps, fetchSnapshotDbs, fetchClientList,
   getSnapshotDownloadUrl, getSnapshotDbDownloadUrl, getLogDownloadUrl, getLogFilteredDownloadUrl,
-  getLogsZipUrl, deleteLogs,
+  getLogsZipUrl, deleteLogs, backfillApEvents,
   SnapshotInfo, LogFileInfo, SiteInfo, ApInfo, SnapshotDbMeta, ClientListItem,
 } from "@/lib/api";
 import ThemeToggle from "@/app/components/ThemeToggle";
@@ -15,9 +15,9 @@ import SaveNowButton from "@/app/components/SaveNowButton";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 
-type TriggerFilter = "all" | "manual" | "auto";
-type TypeFilter = "all" | "ap_metrics" | "floormap" | "sle_metrics" | "client_metrics";
-type FileType = "ap_metrics" | "floormap" | "sle_metrics" | "client_metrics";
+type TriggerFilter = "all" | "manual" | "auto" | "manual-backfill";
+type TypeFilter = "all" | "ap_metrics" | "floormap" | "sle_metrics" | "client_metrics" | "ap_events";
+type FileType = "ap_metrics" | "floormap" | "sle_metrics" | "client_metrics" | "ap_events";
 type Tab = "snapshots" | "csv-logs";
 
 interface UnifiedLogRow {
@@ -37,6 +37,16 @@ function formatSize(bytes: number) {
 }
 
 function TriggerBadge({ trigger }: { trigger: string }) {
+  if (trigger === "manual-backfill") {
+    return (
+      <span
+        className="px-2 py-0.5 rounded border text-xs font-mono"
+        style={{ borderColor: "var(--orange)", color: "var(--orange)", backgroundColor: "rgba(255,140,0,0.08)" }}
+      >
+        manual-backfill
+      </span>
+    );
+  }
   const isManual = trigger === "manual";
   return (
     <span
@@ -49,6 +59,63 @@ function TriggerBadge({ trigger }: { trigger: string }) {
     >
       {isManual ? "manual" : "auto"}
     </span>
+  );
+}
+
+function ApEventsBackfillButton({ onDone }: { onDone: () => void }) {
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+
+  const handleClick = async () => {
+    if (loading) return;
+    if (
+      !window.confirm(
+        "過去7日分のAPイベントを取得してCSV保存します。サイト数によっては数十秒かかる場合があります。実行しますか？"
+      )
+    ) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await backfillApEvents(7);
+      const errSuffix = result.errors.length > 0 ? `（${result.errors.length}サイトでエラー）` : "";
+      setToast({
+        msg: `${result.new_events}件の新規イベントを取得しました（重複${result.duplicate_events}件はスキップ）${errSuffix}`,
+        ok: result.errors.length === 0,
+      });
+      onDone();
+    } catch {
+      setToast({ msg: "バックフィルに失敗しました", ok: false });
+    } finally {
+      setLoading(false);
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  return (
+    <>
+      <button
+        onClick={handleClick}
+        disabled={loading}
+        className="flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-mono transition-all disabled:opacity-50"
+        style={{ borderColor: "var(--orange)", color: "var(--orange)" }}
+      >
+        <History className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+        {loading ? "取得中..." : "過去7日分のイベントログを取得"}
+      </button>
+      {toast && (
+        <div
+          className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg border text-sm font-mono shadow-xl max-w-md"
+          style={{
+            backgroundColor: "var(--bg-card)",
+            borderColor: toast.ok ? "var(--green)" : "var(--red)",
+            color: toast.ok ? "var(--green)" : "var(--red)",
+          }}
+        >
+          {toast.msg}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -81,6 +148,16 @@ function TypeBadge({ fileType }: { fileType: FileType }) {
         style={{ borderColor: "var(--cyan)", color: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }}
       >
         Client Metrics
+      </span>
+    );
+  }
+  if (fileType === "ap_events") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-mono"
+        style={{ borderColor: "var(--red)", color: "var(--red)", backgroundColor: "rgba(255,68,68,0.08)" }}
+      >
+        AP Events
       </span>
     );
   }
@@ -227,6 +304,8 @@ function CsvLogsTab() {
       const isFloormap = f.filename.startsWith("floormap_");
       const isSleMetrics = f.filename.startsWith("sle_metrics_");
       const isClientMetrics = f.filename.startsWith("client_metrics_");
+      const isApEvents = f.filename.startsWith("ap_events_");
+      const isBackfill = f.filename.includes("_backfill");
       const isManual = f.filename.includes("_manual");
       const fileType: FileType = isFloormap
         ? "floormap"
@@ -234,12 +313,14 @@ function CsvLogsTab() {
         ? "sle_metrics"
         : isClientMetrics
         ? "client_metrics"
+        : isApEvents
+        ? "ap_events"
         : "ap_metrics";
       return {
         filename: f.filename,
         fileType,
         savedAt: snap?.saved_at ?? f.created_at,
-        triggeredBy: snap?.triggered_by ?? (isManual ? "manual" : "auto"),
+        triggeredBy: snap?.triggered_by ?? (isBackfill ? "manual-backfill" : isManual ? "manual" : "auto"),
         siteCount: snap?.site_count ?? null,
         apCount: snap?.ap_count ?? null,
         sizeBytes: f.size_bytes,
@@ -322,6 +403,7 @@ function CsvLogsTab() {
             <option value="floormap">Floor Map</option>
             <option value="sle_metrics">SLE Metrics</option>
             <option value="client_metrics">Client Metrics</option>
+            <option value="ap_events">AP Events</option>
           </select>
         </div>
         <div>
@@ -335,9 +417,13 @@ function CsvLogsTab() {
             <option value="all">All</option>
             <option value="manual">Manual</option>
             <option value="auto">Auto</option>
+            <option value="manual-backfill">Manual Backfill</option>
           </select>
         </div>
-        {typeFilter !== "floormap" && typeFilter !== "sle_metrics" && typeFilter !== "client_metrics" && (
+        <div>
+          <ApEventsBackfillButton onDone={() => mutate()} />
+        </div>
+        {typeFilter !== "floormap" && typeFilter !== "sle_metrics" && typeFilter !== "client_metrics" && typeFilter !== "ap_events" && (
           <>
             <div>
               <label className="block text-xs mb-1" style={{ color: "var(--text-muted)" }}>Site Filter</label>

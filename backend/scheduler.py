@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import json
 import logging
 import os
 import time
@@ -8,11 +9,12 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, engine
 from mist.client import MistClient, SLE_METRICS, parse_sle_metric
-from models import AppSettings, ApMetrics, ClientMetrics, RadioConfigChange, RadioConfigCurrent, Snapshot
+from models import AppSettings, ApEvent, ApMetrics, ClientMetrics, RadioConfigChange, RadioConfigCurrent, Snapshot
 from radio_helpers import detect_band_source, overall_source
 from utils import fmt_dt, fmt_dt_tz
 
@@ -90,6 +92,11 @@ CLIENT_FIELDS = [
 CLIENT_CSV_COLUMNS = [
     "timestamp", "site_id", "site_name", "ap_id", "ap_name", "ap_mac",
     *CLIENT_FIELDS,
+]
+
+AP_EVENTS_CSV_COLUMNS = [
+    "event_timestamp", "site_name", "ap_name", "ap_mac", "event_type", "reason",
+    "band", "channel", "pre_channel", "bandwidth", "pre_bandwidth",
 ]
 
 
@@ -745,6 +752,181 @@ async def save_client_log(now: datetime, tz_obj, tz_abbr: str) -> None:
         db.close()
 
 
+def _store_ap_events(db: Session, events: list[dict], devices: list[dict],
+                      site_id: str, site_name: str, now: datetime) -> tuple[list[dict], int]:
+    """イベントを ap_events へ INSERT OR IGNORE する。(新規CSV行リスト, 重複件数) を返す。
+    重複は (site_id, ap_mac, event_type, event_timestamp) の一意制約で判定される。"""
+    ap_by_mac = {
+        (d.get("mac") or "").lower(): {"id": d.get("id", ""), "name": d.get("name", "")}
+        for d in devices
+    }
+    new_rows: list[dict] = []
+    duplicate_count = 0
+
+    for ev in events:
+        ts = ev.get("timestamp")
+        mac = (ev.get("mac") or ev.get("ap") or "").replace(":", "").lower()
+        if ts is None or not mac:
+            continue
+        event_ts = datetime.fromtimestamp(ts, tz=timezone.utc)
+        ap_info = ap_by_mac.get(mac, {})
+        event_type = ev.get("type", "")
+
+        stmt = sqlite_insert(ApEvent).values(
+            event_timestamp=event_ts,
+            fetched_at=now,
+            site_id=site_id,
+            site_name=site_name,
+            ap_mac=mac,
+            ap_id=ap_info.get("id") or None,
+            ap_name=ap_info.get("name") or None,
+            event_type=event_type,
+            reason=ev.get("reason"),
+            band=ev.get("band"),
+            channel=ev.get("channel"),
+            pre_channel=ev.get("pre_channel"),
+            bandwidth=ev.get("bandwidth"),
+            pre_bandwidth=ev.get("pre_bandwidth"),
+            raw_json=json.dumps(ev),
+        ).on_conflict_do_nothing(
+            index_elements=["site_id", "ap_mac", "event_type", "event_timestamp"]
+        )
+        result = db.execute(stmt)
+        if result.rowcount:
+            new_rows.append({
+                "event_timestamp": fmt_dt_tz(event_ts, _app_timezone),
+                "site_name": site_name,
+                "ap_name": ap_info.get("name") or "",
+                "ap_mac": mac,
+                "event_type": event_type,
+                "reason": ev.get("reason"),
+                "band": ev.get("band"),
+                "channel": ev.get("channel"),
+                "pre_channel": ev.get("pre_channel"),
+                "bandwidth": ev.get("bandwidth"),
+                "pre_bandwidth": ev.get("pre_bandwidth"),
+            })
+        else:
+            duplicate_count += 1
+
+    return new_rows, duplicate_count
+
+
+async def save_ap_events_log(now: datetime, tz_obj, tz_abbr: str) -> None:
+    """全サイトのAPイベント（再起動・DFS等）を ap_events テーブルへ保存し、新規分をCSVに書き出す。
+    重複は (site_id, ap_mac, event_type, event_timestamp) の一意制約で INSERT OR IGNORE される。"""
+    client = MistClient()
+    org_id = client.org_id
+    sites = await client.get_sites(org_id)
+    if not sites:
+        logger.info("[AP EVENTS SAVE] No sites.")
+        return
+    if _monitored_site_ids:
+        sites = [s for s in sites if s.get("id") in _monitored_site_ids]
+
+    now_local = now.astimezone(tz_obj)
+    new_rows: list[dict] = []
+
+    db: Session = SessionLocal()
+    try:
+        for site in sites:
+            site_id = site.get("id", "")
+            site_name = site.get("name", "")
+            try:
+                events, devices = await asyncio.gather(
+                    client.get_site_device_events(site_id, duration="1h"),
+                    client.get_site_devices_stats(site_id),
+                )
+            except Exception as e:
+                logger.error(f"[AP EVENTS SAVE] Failed to fetch for site {site_id}: {e}")
+                continue
+
+            rows, _ = _store_ap_events(db, events, devices, site_id, site_name, now)
+            new_rows.extend(rows)
+        db.commit()
+    except Exception as e:
+        logger.error(f"[AP EVENTS SAVE] Failed: {e}")
+        db.rollback()
+        return
+    finally:
+        db.close()
+
+    if not new_rows:
+        logger.info("[AP EVENTS SAVE] No new events, skipping CSV write.")
+        return
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    filename = f"ap_events_{now_local.strftime('%Y%m%d_%H%M')}_{tz_abbr}.csv"
+    filepath = os.path.join(LOGS_DIR, filename)
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=AP_EVENTS_CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(new_rows)
+
+    logger.info(f"[AP EVENTS SAVE] Saved: {filepath} ({len(new_rows)} records)")
+
+
+async def backfill_ap_events(days: int = 7) -> dict:
+    """過去N日分のAPイベントを一括取得し ap_events へ保存する（手動実行用のバックフィル）。
+    サイトごとに順次処理し、あるサイトでエラーが出ても他サイトの処理は継続する。"""
+    client = MistClient()
+    org_id = client.org_id
+    now = datetime.now(timezone.utc)
+    tz_obj = ZoneInfo(_app_timezone)
+    now_local = now.astimezone(tz_obj)
+    tz_abbr = now_local.strftime("%Z")
+
+    sites = await client.get_sites(org_id)
+    if _monitored_site_ids:
+        sites = [s for s in sites if s.get("id") in _monitored_site_ids]
+
+    new_rows: list[dict] = []
+    errors: list[dict] = []
+    sites_processed = 0
+    duplicate_count = 0
+
+    db: Session = SessionLocal()
+    try:
+        for site in sites:
+            site_id = site.get("id", "")
+            site_name = site.get("name", "")
+            try:
+                events, devices = await asyncio.gather(
+                    client.get_site_device_events(site_id, duration=f"{days}d", limit=100),
+                    client.get_site_devices_stats(site_id),
+                )
+                rows, dups = _store_ap_events(db, events, devices, site_id, site_name, now)
+                db.commit()
+                new_rows.extend(rows)
+                duplicate_count += dups
+                sites_processed += 1
+            except Exception as e:
+                db.rollback()
+                logger.error(f"[AP EVENTS BACKFILL] Failed for site {site_name} ({site_id}): {e}")
+                errors.append({"site_name": site_name, "error": str(e)})
+    finally:
+        db.close()
+
+    csv_file: str | None = None
+    if new_rows:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        csv_file = f"ap_events_backfill_{now_local.strftime('%Y%m%d_%H%M')}_{tz_abbr}.csv"
+        filepath = os.path.join(LOGS_DIR, csv_file)
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=AP_EVENTS_CSV_COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(new_rows)
+        logger.info(f"[AP EVENTS BACKFILL] Saved: {filepath} ({len(new_rows)} new events)")
+
+    return {
+        "sites_processed": sites_processed,
+        "new_events": len(new_rows),
+        "duplicate_events": duplicate_count,
+        "csv_file": csv_file,
+        "errors": errors,
+    }
+
+
 async def save_hourly_logs():
     """前回保存以降の ap_metrics 全件を CSV に書き出す（期間ログ方式）。"""
     global last_log_saved_at
@@ -850,6 +1032,11 @@ async def save_hourly_logs():
         await save_client_log(now, tz_obj, tz_abbr)
     except Exception as e:
         logger.error(f"[CLIENT SAVE] Auto save failed: {e}")
+
+    try:
+        await save_ap_events_log(now, tz_obj, tz_abbr)
+    except Exception as e:
+        logger.error(f"[AP EVENTS SAVE] Auto save failed: {e}")
 
     rotate_logs(_log_retention_days)
 

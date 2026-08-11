@@ -4,13 +4,14 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from database import get_db
-from mist.client import MistClient
-from models import ApMetrics, RadioConfigChange, RadioConfigCurrent
+from mist.client import MistClient, RESTART_EVENT_TYPES
+from models import ApEvent, ApMetrics, RadioConfigChange, RadioConfigCurrent
 from radio_helpers import detect_band_source, overall_source
+from scheduler import backfill_ap_events
 from utils import fmt_dt
 
 router = APIRouter()
@@ -159,36 +160,49 @@ async def get_ap_clients(ap_id: str, db: Session = Depends(get_db)) -> list[dict
 
 
 @router.get("/api/aps/{ap_id}/events")
-async def get_ap_events(ap_id: str, duration: str = "1d", db: Session = Depends(get_db)) -> dict[str, Any]:
-    """該当 AP のイベントを Mist events/search からリアルタイム取得して返す。
-    site_id / mac は DB（ap_metrics 最新レコード）から解決する。"""
+async def get_ap_events(ap_id: str, hours: int = 24, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """該当 AP のイベント（再起動・DFS等）を ap_events テーブルから過去N時間分・新しい順で返す。
+    mac は DB（ap_metrics 最新レコード）から解決する。Mist側の検索APIは約30日しか遡れないため、
+    自前で蓄積した ap_events を参照する。"""
     row = (
         db.query(ApMetrics)
         .filter_by(ap_id=ap_id)
         .order_by(ApMetrics.timestamp.desc())
         .first()
     )
-    if not row or not row.site_id or not row.mac:
+    if not row or not row.mac:
         return {"events": []}
 
     norm_mac = row.mac.replace(":", "").replace("-", "").lower()
-    client = MistClient()
-    results = await client.get_device_events(row.site_id, mac=norm_mac, duration=duration)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    events = (
+        db.query(ApEvent)
+        .filter(ApEvent.ap_mac == norm_mac, ApEvent.event_timestamp >= since)
+        .order_by(ApEvent.event_timestamp.desc())
+        .all()
+    )
+    return {
+        "events": [
+            {
+                "timestamp": fmt_dt(e.event_timestamp),
+                "type": e.event_type,
+                "reason": e.reason,
+                "band": e.band,
+                "channel": e.channel,
+                "pre_channel": e.pre_channel,
+                "bandwidth": e.bandwidth,
+                "pre_bandwidth": e.pre_bandwidth,
+                "is_restart": e.event_type in RESTART_EVENT_TYPES,
+            }
+            for e in events
+        ]
+    }
 
-    events = []
-    for r in results:
-        # mac フィルターはサーバー側で効くが、念のためアプリ側でも照合する
-        ev_mac = (r.get("mac") or r.get("ap") or "").replace(":", "").lower()
-        if ev_mac and ev_mac != norm_mac:
-            continue
-        ts = r.get("timestamp")
-        events.append({
-            "timestamp": fmt_dt(datetime.fromtimestamp(ts, tz=timezone.utc)) if ts else None,
-            "type": r.get("type", ""),
-            "text": r.get("text") or r.get("reason") or "",
-        })
-    events.sort(key=lambda e: e["timestamp"] or "", reverse=True)
-    return {"events": events}
+
+@router.post("/api/ap-events/backfill")
+async def backfill_ap_events_endpoint(days: int = Query(7, ge=1, le=30)) -> dict[str, Any]:
+    """過去N日分のAPイベントを Mist API から一括取得し ap_events へ保存する（手動実行）。"""
+    return await backfill_ap_events(days)
 
 
 def _build_band_dict(b: dict) -> dict:

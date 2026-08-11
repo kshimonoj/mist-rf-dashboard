@@ -630,11 +630,31 @@ export const fetchClientRoaming = (mac: string, hours = 72, siteId?: string) => 
 export interface ApEvent {
   timestamp: string | null;
   type: string;
-  text: string;
+  reason: string | null;
+  band: string | null;
+  channel: number | null;
+  pre_channel: number | null;
+  bandwidth: number | null;
+  pre_bandwidth: number | null;
+  is_restart: boolean;
 }
 
-export const fetchApEvents = (apId: string, duration = "1d") =>
-  apiFetch<{ events: ApEvent[] }>(`/api/aps/${apId}/events?duration=${duration}`);
+export const fetchApEvents = (apId: string, hours = 24) =>
+  apiFetch<{ events: ApEvent[] }>(`/api/aps/${apId}/events?hours=${hours}`);
+
+export interface ApEventsBackfillResult {
+  sites_processed: number;
+  new_events: number;
+  duplicate_events: number;
+  csv_file: string | null;
+  errors: { site_name: string; error: string }[];
+}
+
+export async function backfillApEvents(days = 7): Promise<ApEventsBackfillResult> {
+  const res = await fetch(`${API_BASE}/api/ap-events/backfill?days=${days}`, { method: "POST" });
+  if (!res.ok) throw new Error(`Backfill error ${res.status}`);
+  return res.json();
+}
 
 // ── Credentials (Environments) ────────────────────────────────────────────────
 
