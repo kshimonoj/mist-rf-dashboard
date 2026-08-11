@@ -645,7 +645,7 @@ export const fetchApEvents = (apId: string, hours = 24) =>
 export interface ApEventsBackfillResult {
   sites_processed: number;
   new_events: number;
-  duplicate_events: number;
+  skipped_existing: number;
   csv_file: string | null;
   errors: { site_name: string; error: string }[];
 }

@@ -883,7 +883,7 @@ async def backfill_ap_events(days: int = 7) -> dict:
     new_rows: list[dict] = []
     errors: list[dict] = []
     sites_processed = 0
-    duplicate_count = 0
+    skipped_existing_count = 0
 
     db: Session = SessionLocal()
     try:
@@ -895,10 +895,10 @@ async def backfill_ap_events(days: int = 7) -> dict:
                     client.get_site_device_events(site_id, duration=f"{days}d", limit=100),
                     client.get_site_devices_stats(site_id),
                 )
-                rows, dups = _store_ap_events(db, events, devices, site_id, site_name, now)
+                rows, skipped = _store_ap_events(db, events, devices, site_id, site_name, now)
                 db.commit()
                 new_rows.extend(rows)
-                duplicate_count += dups
+                skipped_existing_count += skipped
                 sites_processed += 1
             except Exception as e:
                 db.rollback()
@@ -921,7 +921,7 @@ async def backfill_ap_events(days: int = 7) -> dict:
     return {
         "sites_processed": sites_processed,
         "new_events": len(new_rows),
-        "duplicate_events": duplicate_count,
+        "skipped_existing": skipped_existing_count,
         "csv_file": csv_file,
         "errors": errors,
     }

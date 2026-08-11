@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -110,28 +111,37 @@ class MistClient:
         self.org_id = cred["org_id"]
         self.headers = {"Authorization": f"Token {cred['token']}"}
 
-    async def _get(self, path: str, params: Optional[dict] = None) -> dict | list:
-        url = f"{self.base_url}{path}"
+    async def _request(self, url: str, params: Optional[dict] = None) -> dict | list:
         for attempt in range(3):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 try:
                     resp = await client.get(url, headers=self.headers, params=params)
                     if resp.status_code == 429:
                         wait = 2 ** attempt
-                        logger.warning(f"Rate limited on {path}, retrying in {wait}s")
+                        logger.warning(f"Rate limited on {url}, retrying in {wait}s")
                         await asyncio.sleep(wait)
                         continue
                     if resp.status_code in (401, 403):
-                        logger.error(f"Auth error {resp.status_code} on {path}")
+                        logger.error(f"Auth error {resp.status_code} on {url}")
                         return []
                     resp.raise_for_status()
                     return resp.json()
                 except httpx.HTTPError as e:
                     if attempt == 2:
-                        logger.error(f"HTTP error on {path}: {e}")
+                        logger.error(f"HTTP error on {url}: {e}")
                         return []
                     await asyncio.sleep(2 ** attempt)
         return []
+
+    async def _get(self, path: str, params: Optional[dict] = None) -> dict | list:
+        return await self._request(f"{self.base_url}{path}", params)
+
+    async def _get_by_next(self, next_path: str) -> dict | list:
+        """レスポンスの `next` フィールド（ホスト以下の絶対パス+クエリ文字列）でGETする。
+        `next` には既に `/api/v1/...` が含まれるため base_url のホスト部分のみ使う。"""
+        parts = urlsplit(self.base_url)
+        root = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+        return await self._request(f"{root}{next_path}")
 
     async def _get_with_headers(self, path: str) -> dict:
         """レスポンスボディと X-Page-Total ヘッダーを返す。"""
@@ -236,30 +246,44 @@ class MistClient:
         return result if isinstance(result, dict) else {}
 
     async def get_site_device_events(self, site_id: str, duration: str = "1d", limit: int = 100) -> list[dict]:
-        """GET /sites/{site_id}/devices/events/search を duration/limit でページネーションしながら全件取得する。"""
+        """GET /sites/{site_id}/devices/events/search を全件取得する。
+        本APIは `page` パラメータをサポートしておらず常に1ページ目を返すため、レスポンスの
+        `next` フィールド（search_after カーソルを含む絶対パス）を辿ってページ送りする。"""
         params: dict = {"duration": duration, "limit": limit, "device_type": "ap"}
         result = await self._get(f"/sites/{site_id}/devices/events/search", params=params)
         if isinstance(result, dict):
             events = list(result.get("results") or [])
-            total = result.get("total", len(events))
+            next_path = result.get("next")
         elif isinstance(result, list):
             events = result
-            total = len(events)
+            next_path = None
         else:
             return []
 
-        page = 2
-        while len(events) < total and page <= 20:
-            page_result = await self._get(
-                f"/sites/{site_id}/devices/events/search",
-                params={**params, "page": page},
-            )
-            page_events = page_result.get("results") if isinstance(page_result, dict) else page_result
+        seen_next: set[str] = set()
+        loop_count = 0
+        while next_path and loop_count < 50:
+            loop_count += 1
+            if next_path in seen_next:
+                logger.warning(f"get_site_device_events: cursor repeated for site {site_id}, stopping")
+                break
+            seen_next.add(next_path)
+
+            page_result = await self._get_by_next(next_path)
+            page_events = page_result.get("results") if isinstance(page_result, dict) else None
             if not page_events:
                 break
             events.extend(page_events)
-            page += 1
-        return events
+            next_path = page_result.get("next") if isinstance(page_result, dict) else None
+
+        if loop_count >= 50:
+            logger.warning(f"get_site_device_events: reached max loop count (50) for site {site_id}")
+
+        deduped: dict[tuple, dict] = {}
+        for ev in events:
+            key = (ev.get("timestamp"), ev.get("mac") or ev.get("ap"), ev.get("type"))
+            deduped.setdefault(key, ev)
+        return list(deduped.values())
 
     async def get_site_clients(self, site_id: str) -> list[dict]:
         """GET /sites/{site_id}/stats/clients?wired=false で無線クライアント一覧を取得する。

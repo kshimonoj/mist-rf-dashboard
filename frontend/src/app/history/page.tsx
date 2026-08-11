@@ -80,7 +80,7 @@ function ApEventsBackfillButton({ onDone }: { onDone: () => void }) {
       const result = await backfillApEvents(7);
       const errSuffix = result.errors.length > 0 ? `（${result.errors.length}サイトでエラー）` : "";
       setToast({
-        msg: `${result.new_events}件の新規イベントを取得しました（重複${result.duplicate_events}件はスキップ）${errSuffix}`,
+        msg: `${result.new_events}件の新規イベントを取得しました（既存${result.skipped_existing}件はスキップ）${errSuffix}`,
         ok: result.errors.length === 0,
       });
       onDone();
