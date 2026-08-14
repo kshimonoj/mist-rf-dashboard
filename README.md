@@ -220,12 +220,32 @@ from hangap import detect, load
 
 res = load("/path/to/logs/2026-08-09")
 df = detect(res.metrics, res.events, res.gaps,
-            window_start="2026-08-09 16:00", window_end="2026-08-09 22:00")
+            window_start="2026-08-09 16:00", window_end="2026-08-09 21:00")
 ```
 
 Always pass `gaps`. Without it, a zero interval is silently joined across a missing period and
 the zero-sample count becomes too large — it never raises an error, so the mistake is hard to
-notice.
+notice. Gaps with zero actually-missing samples (sampling jitter, e.g. a 460 s gap on a 300 s
+interval) never truncate an interval — only a gap that dropped at least one sample does.
+
+`window_start` / `window_end` are both optional and only decide which intervals are *in scope*
+(whether an interval's zero-start falls in the range) — they never truncate the samples used to
+resolve an interval. Recovery, the following client count, event correlation, and even the
+sample just before zero-start may all come from outside the window. This means loading log
+files that only cover the target hour will miss a "previous sample" lookup right at the window's
+start (that interval simply won't be detected — load a little extra history if you need it), and
+an interval whose zero-start lands right at `window_end` still resolves correctly using whatever
+data follows it in the loaded file.
+
+If the loaded data doesn't actually cover the requested window (a common risk when joining
+hourly History Log files), `detect()` emits a `UserWarning` — it never raises an error:
+
+- no sample before `window_start` → an interval starting right at the window's head may go
+  undetected (its "previous sample" lookup has nothing to find)
+- data doesn't reach `window_end` → a trailing interval may be misclassified as "ongoing" when
+  it would actually have recovered given more log
+- events don't reach `window_end + event_window` → event correlation near the window's end may
+  be incomplete
 
 ### `min_zero_samples` counts samples, not time
 

@@ -14,8 +14,6 @@ from hangap.loader import load
 
 INTERVAL = 300
 START = datetime(2026, 1, 1, 9, 0, 5)
-WINDOW_START = datetime(2026, 1, 1, 9, 0)
-WINDOW_END = datetime(2026, 1, 2, 9, 0)
 
 #: [5,5] + ゼロ 10 + [5]*3 → ゼロ終了は index 11
 COUNTS = [5, 5] + [0] * 10 + [5] * 3
@@ -30,6 +28,7 @@ def metrics_rows() -> list[dict]:
 
 
 def run(tmp_path, events, **kwargs):
+    """window_start / window_end は省略（読み込んだ全範囲を使う）。"""
     S.write_metrics(tmp_path / "ap_metrics.csv", metrics_rows())
     S.write_events(tmp_path / "ap_events.csv", events)
     res = load(tmp_path)
@@ -37,8 +36,6 @@ def run(tmp_path, events, **kwargs):
         res.metrics,
         res.events,
         res.gaps,
-        window_start=WINDOW_START,
-        window_end=WINDOW_END,
         **kwargs,
     )
 
@@ -137,12 +134,6 @@ def test_events_argument_may_be_omitted(tmp_path):
     """events を渡さなくても検出自体は動く（イベント列が空になるだけ）。"""
     S.write_metrics(tmp_path / "ap_metrics.csv", metrics_rows())
     res = load(tmp_path)
-    out = detect(
-        res.metrics,
-        None,
-        res.gaps,
-        window_start=WINDOW_START,
-        window_end=WINDOW_END,
-    )
+    out = detect(res.metrics, None, res.gaps)
     assert len(out) == 1
     assert out.iloc[0]["Event種別"] == ""

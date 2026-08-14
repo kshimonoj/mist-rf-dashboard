@@ -1,4 +1,4 @@
-"""合成データによるシナリオ A〜G。
+"""合成データによるシナリオ A〜H。
 
 ゴールデンデータが無い環境でも検出ロジックの正しさを確認できるようにする。
 合成データのみを使う（実データ由来の値は書かない）。
@@ -26,8 +26,6 @@ from hangap.loader import load
 
 INTERVAL = 300  # 5 分間隔
 START = datetime(2026, 1, 1, 9, 0, 5)
-WINDOW_START = datetime(2026, 1, 1, 9, 0)
-WINDOW_END = datetime(2026, 1, 2, 9, 0)
 
 
 def ap_rows(
@@ -58,15 +56,18 @@ def ap_rows(
 
 
 def run(tmp_path, rows, **kwargs):
-    """CSV へ書き出し、ローダを通してから検出する（gaps はローダが作るものを使う）。"""
+    """CSV へ書き出し、ローダを通してから検出する（gaps はローダが作るものを使う）。
+
+    既定では window_start / window_end とも省略する（読み込んだ全範囲を使う）。
+    """
     S.write_metrics(tmp_path / "ap_metrics.csv", rows)
     res = load(tmp_path)
     return detect(
         res.metrics,
         res.events,
         kwargs.pop("gaps", res.gaps),
-        window_start=kwargs.pop("window_start", WINDOW_START),
-        window_end=kwargs.pop("window_end", WINDOW_END),
+        window_start=kwargs.pop("window_start", None),
+        window_end=kwargs.pop("window_end", None),
         **kwargs,
     )
 
@@ -200,6 +201,44 @@ def test_scenario_e_gap_splits_the_interval(tmp_path):
     assert first["連続ゼロ回数"] + second["連続ゼロ回数"] == 18
 
 
+def test_scenario_e_gap_has_missing_samples(tmp_path):
+    """E で使うギャップは missing_samples >= 1 の「本物の欠測」であることを確認する。
+
+    missing_samples == 0（ジッタ）はこのテストの対象ではない（下の別テストで検証する）。
+    """
+    S.write_metrics(
+        tmp_path / "ap_metrics.csv",
+        ap_rows(1, [5] + [0] * 21 + [5] * 3, skip=(11, 12, 13)),
+    )
+    res = load(tmp_path)
+    assert len(res.gaps) == 1
+    assert res.gaps.iloc[0]["missing_samples"] >= 1
+
+
+def test_scenario_e_jitter_gap_does_not_truncate(tmp_path):
+    """missing_samples == 0 のギャップ（ジッタ。1 件も欠けていない）は区間を打ち切らない。
+
+    実測で 300 秒間隔に対し 460 秒のジッタが発生しても、``gap_factor`` を超えるだけで
+    サンプル自体は 1 件も欠けていない（missing_samples == 0）。ローダはこれもギャップとして
+    報告するが、detector 側は打ち切り対象にしない。
+    """
+    offsets = [0, 300, 600, 900, 900 + 460, 900 + 460 + 300, 900 + 460 + 600, 900 + 460 + 900,
+               900 + 460 + 1200]
+    counts = [5, 0, 0, 0, 0, 0, 0, 0, 5]
+    rows = [S.metrics_row(START + timedelta(seconds=o), num_clients=c) for o, c in zip(offsets, counts)]
+
+    S.write_metrics(tmp_path / "ap_metrics.csv", rows)
+    res = load(tmp_path)
+    assert res.gaps.iloc[0]["missing_samples"] == 0  # 前提: ジッタであって欠測ではない
+
+    out = detect(res.metrics, res.events, res.gaps, window_start=None, window_end=None)
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["回復状況"] == STATUS_RECOVERED
+    assert row["連続ゼロ回数"] == 7  # ジッタを挟んでも 1 区間のまま（分割されない）
+
+
 def test_scenario_e_without_gaps_merges_and_overcounts(tmp_path):
     """gaps を渡さないと欠測を跨いで連結され、連続ゼロ回数が過大になる。
 
@@ -269,3 +308,35 @@ def test_window_limits_the_scan(tmp_path):
         window_start=START + timedelta(seconds=INTERVAL * 3),  # ゼロの途中から
     )
     assert late.empty
+
+
+# ---------------------------------------------------------------------------
+# H: window_start より前の直前サンプル（サンプル自体は絞り込まない）
+# ---------------------------------------------------------------------------
+
+
+def test_scenario_h_previous_sample_outside_window_start(tmp_path):
+    """window_start より前に clients>=1 のサンプルがあり、window_start 直後にゼロへ
+    落ちて回復する区間 → 検出され、直前clients・ゼロ直前時刻は窓外のサンプルの値になる。
+
+    window_start はサンプル自体を絞り込まない（「ゼロ開始が範囲内か」の判定にのみ使う）ため、
+    直前clients を取るサンプルが window_start より前にあってもよい。
+    """
+    counts = [5, 5, 5] + [0] * 7 + [5] * 3
+    # index2（直前サンプル）は窓の外、index3（ゼロ開始）は窓のすぐ内側になるよう置く
+    window_start = START + timedelta(seconds=INTERVAL * 3 - 100)
+    assert START + timedelta(seconds=INTERVAL * 2) < window_start < START + timedelta(seconds=INTERVAL * 3)
+
+    out = run(tmp_path, ap_rows(1, counts), window_start=window_start)
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["回復状況"] == STATUS_RECOVERED
+    assert row["連続ゼロ回数"] == 7
+    assert row["ゼロ開始"] == START + timedelta(seconds=INTERVAL * 3)
+    assert row["ゼロ開始"] >= window_start
+
+    # 直前clients・ゼロ直前時刻は窓の外（index2）のサンプルの値
+    assert row["直前clients"] == 5
+    assert row["ゼロ直前時刻"] == START + timedelta(seconds=INTERVAL * 2)
+    assert row["ゼロ直前時刻"] < window_start
