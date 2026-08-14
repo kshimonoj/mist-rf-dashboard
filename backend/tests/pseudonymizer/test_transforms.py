@@ -6,7 +6,7 @@ from conftest import read_csv
 
 from pseudonymizer.cli import main
 from pseudonymizer.salt import SaltMaterial
-from pseudonymizer.schemas import TransformType as T, detect_file_type
+from pseudonymizer.schemas import FILE_TYPES_BY_KEY, TransformType as T
 from pseudonymizer.transforms import (
     MappingStore,
     Pseudonymizer,
@@ -57,7 +57,7 @@ def test_shift_timestamp_iso_and_z():
 
 def test_mac_input_normalized_regardless_of_separator():
     engine = make_engine()
-    ft = detect_file_type("ap_metrics_x.csv")
+    ft = FILE_TYPES_BY_KEY["ap_metrics"]
     engine.observe_row(ft, {"mac": "AA:BB:CC:DD:EE:01"})
     engine.build()
     assert engine.pseudonym(T.AP_MAC, "aabbccddee01") == engine.pseudonym(T.AP_MAC, "AA-BB-CC-DD-EE-01")
@@ -65,7 +65,7 @@ def test_mac_input_normalized_regardless_of_separator():
 
 def test_empty_values_stay_empty():
     engine = make_engine()
-    ft = detect_file_type("ap_events_x.csv")
+    ft = FILE_TYPES_BY_KEY["ap_events"]
     engine.observe_row(ft, {"ap_name": "", "ap_mac": ""})
     engine.build()
     row = engine.transform_row(ft, {"ap_name": "", "ap_mac": "", "reason": ""})

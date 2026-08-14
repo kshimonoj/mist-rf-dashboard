@@ -22,7 +22,7 @@ from .salt import (
     generate_salt_material,
     load_or_create_salt,
 )
-from .schemas import FileType, TransformType as T, detect_file_type
+from .schemas import FileType, TransformType as T, detect_file_type_allowing_unknown
 from .transforms import (
     NUMBERED_TYPES,
     MappingStore,
@@ -114,26 +114,29 @@ def validate_output_dir(out_dir: str, inputs: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def read_input(path: str, unknown_mode: str) -> InputFile:
-    filename = os.path.basename(path)
-    file_type = detect_file_type(filename)
-    if file_type is None:
-        raise CliError(f"cannot determine file type from filename: {filename}")
-
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f, restkey="__extra__", restval="")
         header = list(reader.fieldnames or [])
         if not header:
             raise CliError(f"input file has no header row: {path}")
+        if len(set(header)) != len(header):
+            raise CliError(f"{path}: duplicated column name in header")
+
+        file_type, unknown_list = detect_file_type_allowing_unknown(header)
+        if file_type is None:
+            raise CliError(
+                f"{path}: cannot determine file type from header columns "
+                "(no known schema's column set matches this file); "
+                f"header columns: {', '.join(sorted(header))}"
+            )
+
         rows = []
         for i, row in enumerate(reader, start=2):
             if row.pop("__extra__", None):
                 raise CliError(f"{path}: line {i} has more fields than the header")
             rows.append({k: ("" if v is None else v) for k, v in row.items()})
 
-    if len(set(header)) != len(header):
-        raise CliError(f"{path}: duplicated column name in header")
-
-    unknown = [c for c in header if c not in file_type.whitelist]
+    unknown = list(unknown_list)
     if unknown:
         if unknown_mode == UNKNOWN_ERROR:
             raise CliError(
@@ -259,6 +262,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="vlan_id を変換せず保持する")
     parser.add_argument("--no-time-shift", action="store_true",
                         help="タイムシフトを行わない（非推奨）")
+    parser.add_argument("--shift-granularity", choices=("day", "week"), default="day",
+                        help="新規ソルト生成時のタイムシフト粒度（既定: day）。"
+                             "week は曜日パターン分析用だが再識別リスクが上がる")
     parser.add_argument("--dry-run", action="store_true",
                         help="出力せず、検出した種別・列・変換件数のみ表示する")
     return parser
@@ -280,10 +286,10 @@ def run(args: argparse.Namespace) -> int:
     if args.dry_run and not os.path.exists(salt_path):
         # dry-run で機密ファイルを作らない。この実行限りのソルトを使う。
         _warn(f"dry-run: salt file not found ({salt_path}); using an ephemeral salt")
-        material = generate_salt_material()
+        material = generate_salt_material(args.shift_granularity)
         mapping = MappingStore(salt_fingerprint=material.fingerprint)
     else:
-        material, _created = load_or_create_salt(salt_path)
+        material, _created = load_or_create_salt(salt_path, granularity=args.shift_granularity)
         mapping = load_mapping(default_map_path(salt_path), material)
 
     engine = Pseudonymizer(

@@ -31,7 +31,14 @@ def test_rule_uuid_fires_on_unconverted_uuid():
 
 def test_rule_uuid_allows_generated_pseudonym_uuid():
     rows = [{"reason": "10000000-0000-4000-8000-000000000042"},
-            {"reason": "20000000-0000-4000-8000-000000000007"}]
+            {"reason": "20000000-0000-4000-8000-000000000007"},
+            {"reason": "30000000-0000-4000-8000-000000000001"}]
+    assert RULE_UUID not in _rules(["reason"], rows)
+
+
+def test_rule_uuid_allows_generated_map_id_pseudonym():
+    """MAP_ID の仮名 UUID(30000000- プレフィックス)を自分の漏れとして誤検出しない。"""
+    rows = [{"reason": "30000000-0000-4000-8000-000000000123"}]
     assert RULE_UUID not in _rules(["reason"], rows)
 
 
@@ -89,10 +96,10 @@ def test_clean_output_has_no_violations(indir, tmp_path):
     # 正常出力そのものを再検査しても違反ゼロであること
     from pseudonymizer.schemas import detect_file_type
     for path in sorted(out.glob("*.csv")):
-        ft = detect_file_type(path.name)
         rows = read_csv(path)
         with open(path, newline="", encoding="utf-8") as f:
             header = next(csv.reader(f))
+        ft = detect_file_type(header)
         ips = {r.get("ip") for r in rows if r.get("ip")}
         assert not check_output(header, rows, allowed_columns=ft.whitelist,
                                 allowed_ips=frozenset(ips))

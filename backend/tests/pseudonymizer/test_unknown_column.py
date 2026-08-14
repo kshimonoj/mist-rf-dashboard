@@ -4,7 +4,14 @@ import csv
 from conftest import read_csv, write_csv
 
 from pseudonymizer.cli import main
-from pseudonymizer.schemas import AP_EVENTS_COLUMNS, detect_file_type
+from pseudonymizer.schemas import (
+    AP_EVENTS_COLUMNS,
+    AP_METRICS_COLUMNS,
+    CLIENT_METRICS_COLUMNS,
+    FLOORMAP_SUMMARY_COLUMNS,
+    SLE_METRICS_COLUMNS,
+    detect_file_type,
+)
 
 
 def _add_unknown_column(path, value="TESTVALUE"):
@@ -63,15 +70,20 @@ def test_unknown_file_type_is_rejected(indir, tmp_path, capsys):
 
 
 def test_file_type_detection():
-    assert detect_file_type("ap_metrics_20240101_0900_JST.csv").key == "ap_metrics"
-    assert detect_file_type("ap_metrics_20240101_090000_JST_manual.csv").key == "ap_metrics"
-    assert detect_file_type("ap_events_20240101_0900_JST.csv").key == "ap_events"
-    assert detect_file_type("ap_events_backfill_20240101_0900_JST.csv").key == "ap_events"
-    assert detect_file_type("client_metrics_20240101_0900_JST.csv").key == "client_metrics"
-    assert detect_file_type("sle_metrics_20240101_0900_JST.csv").key == "sle_metrics"
-    assert detect_file_type("floormap_20240101_0900_JST_summary.csv").key == "floormap_summary"
-    assert detect_file_type("floormap_20240101_090000_JST_manual_summary.csv").key == "floormap_summary"
-    assert detect_file_type("random.csv") is None
+    """種別判定はヘッダーの列集合だけで行う（ファイル名は一切見ない）。"""
+    assert detect_file_type(AP_METRICS_COLUMNS).key == "ap_metrics"
+    assert detect_file_type(AP_EVENTS_COLUMNS).key == "ap_events"
+    assert detect_file_type(CLIENT_METRICS_COLUMNS).key == "client_metrics"
+    assert detect_file_type(SLE_METRICS_COLUMNS).key == "sle_metrics"
+    assert detect_file_type(FLOORMAP_SUMMARY_COLUMNS).key == "floormap_summary"
+    assert detect_file_type(["a", "b"]) is None
+
+    # 列順は無視する
+    assert detect_file_type(list(reversed(AP_EVENTS_COLUMNS))).key == "ap_events"
+    # 列の過不足（重複を含む）は不一致
+    assert detect_file_type(list(AP_EVENTS_COLUMNS) + ["extra_col"]) is None
+    assert detect_file_type(list(AP_EVENTS_COLUMNS)[:-1]) is None
+    assert detect_file_type(list(AP_EVENTS_COLUMNS) + [AP_EVENTS_COLUMNS[0]]) is None
 
 
 def test_dry_run_writes_nothing(indir, tmp_path, capsys):

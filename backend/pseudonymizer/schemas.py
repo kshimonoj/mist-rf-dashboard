@@ -4,10 +4,11 @@
 - 変換ルール（列名 → 変換型）は **グローバルな辞書 1 つ**（``COLUMN_RULES``）だけを持つ。
 - ファイル種別は「通す列のホワイトリスト」（``FileType.columns``）だけを持つ。
 - ``mac`` のように種別で意味が変わる列だけ ``FileType.overrides`` で解決する。
+- ファイル種別の判定は **CSV ヘッダー行の列集合**で行う（ファイル名は使わない）。
+  列集合が既知の種別と完全一致（列順は無視、過不足は不一致）した場合にその種別を採用する。
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -25,6 +26,7 @@ class TransformType(str, Enum):
     IP = "IP"
     SSID = "SSID"
     MAP_NAME = "MAP_NAME"
+    MAP_ID = "MAP_ID"
     AP_NAME_LIST = "AP_NAME_LIST"
     VLAN = "VLAN"
     TIMESTAMP = "TIMESTAMP"
@@ -52,6 +54,7 @@ COLUMN_RULES: dict[str, TransformType] = {
     "ip": T.IP,
     "ssid": T.SSID,
     "map_name": T.MAP_NAME,
+    "map_id": T.MAP_ID,
     "ap_list": T.AP_NAME_LIST,
     "vlan_id": T.VLAN,
     # --- そのまま通す列 ---
@@ -59,6 +62,21 @@ COLUMN_RULES: dict[str, TransformType] = {
     "status": T.PASSTHROUGH,
     "num_clients": T.PASSTHROUGH,
     "model": T.PASSTHROUGH,
+    # floormap_ap_detail（フロア図原点からの相対座標。単体では場所を特定できないため通す）
+    "x_m": T.PASSTHROUGH,
+    "y_m": T.PASSTHROUGH,
+    "band_24_channel": T.PASSTHROUGH,
+    "band_24_bandwidth": T.PASSTHROUGH,
+    "band_24_power": T.PASSTHROUGH,
+    "band_24_noise_floor": T.PASSTHROUGH,
+    "band_5_channel": T.PASSTHROUGH,
+    "band_5_bandwidth": T.PASSTHROUGH,
+    "band_5_power": T.PASSTHROUGH,
+    "band_5_noise_floor": T.PASSTHROUGH,
+    "band_6_channel": T.PASSTHROUGH,
+    "band_6_bandwidth": T.PASSTHROUGH,
+    "band_6_power": T.PASSTHROUGH,
+    "band_6_noise_floor": T.PASSTHROUGH,
     # ap_events
     "event_type": T.PASSTHROUGH,
     "reason": T.PASSTHROUGH,
@@ -135,10 +153,13 @@ AP_IDENTITY_TYPES: tuple[TransformType, ...] = (T.AP_ID, T.AP_NAME, T.AP_MAC)
 
 @dataclass(frozen=True)
 class FileType:
-    """CSV ファイル種別の定義。"""
+    """CSV ファイル種別の定義。
+
+    判定はヘッダーの列集合（``columns`` の frozenset）の完全一致で行う。
+    ファイル名は判定に使わない。
+    """
 
     key: str
-    pattern: re.Pattern[str]
     columns: tuple[str, ...]
     overrides: dict[str, TransformType] = field(default_factory=dict)
 
@@ -183,35 +204,46 @@ FLOORMAP_SUMMARY_COLUMNS: tuple[str, ...] = (
     "ap_count", "ap_list", "has_interference",
 )
 
+# floormap の生 AP データ（フロア図上の AP ごとのスナップショット）
+FLOORMAP_AP_DETAIL_COLUMNS: tuple[str, ...] = (
+    "timestamp", "site_id", "site_name", "map_id", "map_name", "ap_name", "mac",
+    "model", "status",
+    "band_24_channel", "band_24_bandwidth", "band_24_power", "band_24_noise_floor",
+    "band_5_channel", "band_5_bandwidth", "band_5_power", "band_5_noise_floor",
+    "band_6_channel", "band_6_bandwidth", "band_6_power", "band_6_noise_floor",
+    "num_clients", "x_m", "y_m",
+)
+
 
 FILE_TYPES: tuple[FileType, ...] = (
     FileType(
         key="ap_metrics",
-        pattern=re.compile(r"^ap_metrics_.*\.csv$"),
         columns=AP_METRICS_COLUMNS,
         overrides={"mac": T.AP_MAC},
     ),
     FileType(
         key="ap_events",
-        # ap_events_backfill_*.csv も同じ列構成なのでこのパターンに含まれる
-        pattern=re.compile(r"^ap_events_.*\.csv$"),
+        # ap_events_backfill_*.csv も同じ列構成なので、この種別に吸収される
         columns=AP_EVENTS_COLUMNS,
     ),
     FileType(
         key="client_metrics",
-        pattern=re.compile(r"^client_metrics_.*\.csv$"),
         columns=CLIENT_METRICS_COLUMNS,
         overrides={"mac": T.CLIENT_MAC},
     ),
     FileType(
         key="sle_metrics",
-        pattern=re.compile(r"^sle_metrics_.*\.csv$"),
         columns=SLE_METRICS_COLUMNS,
     ),
     FileType(
         key="floormap_summary",
-        pattern=re.compile(r"^floormap_.*_summary\.csv$"),
+        # floormap_*_manual_summary.csv も同じ列構成なので、この種別に吸収される
         columns=FLOORMAP_SUMMARY_COLUMNS,
+    ),
+    FileType(
+        key="floormap_ap_detail",
+        columns=FLOORMAP_AP_DETAIL_COLUMNS,
+        overrides={"mac": T.AP_MAC},
     ),
 )
 
@@ -224,11 +256,13 @@ EXPECTED_COLUMN_COUNTS: dict[str, int] = {
     "client_metrics": 36,
     "sle_metrics": 28,
     "floormap_summary": 8,
+    "floormap_ap_detail": 24,
 }
 
 
 def _self_check() -> None:
     """定義の整合性を import 時に検証する（開発時の取りこぼし防止）。"""
+    seen_whitelists: dict[frozenset[str], str] = {}
     for ft in FILE_TYPES:
         expected = EXPECTED_COLUMN_COUNTS[ft.key]
         if len(ft.columns) != expected:
@@ -237,6 +271,13 @@ def _self_check() -> None:
             )
         if len(set(ft.columns)) != len(ft.columns):
             raise RuntimeError(f"FileType {ft.key}: duplicated column in whitelist")
+        if ft.whitelist in seen_whitelists:
+            raise RuntimeError(
+                f"FileType {ft.key} and {seen_whitelists[ft.whitelist]} "
+                "have the identical column set; header-based detection cannot "
+                "distinguish them"
+            )
+        seen_whitelists[ft.whitelist] = ft.key
         for col in ft.columns:
             if col in ft.overrides:
                 continue
@@ -256,12 +297,41 @@ def _self_check() -> None:
 _self_check()
 
 
-def detect_file_type(filename: str) -> FileType | None:
-    """ファイル名から種別を判定する。判定できなければ None。"""
+def detect_file_type(header: list[str] | tuple[str, ...]) -> FileType | None:
+    """ヘッダーの列集合から種別を判定する。完全一致した種別が無ければ None。
+
+    列順は無視するが、列数の過不足（重複列を含む）は不一致として扱う。
+    """
+    unique = frozenset(header)
+    if len(unique) != len(header):
+        return None
     for ft in FILE_TYPES:
-        if ft.pattern.match(filename):
+        if ft.whitelist == unique:
             return ft
     return None
+
+
+def detect_file_type_allowing_unknown(
+    header: list[str] | tuple[str, ...],
+) -> tuple[FileType | None, tuple[str, ...]]:
+    """完全一致しない場合に、既知の種別のホワイトリストが header の部分集合になっている
+    種別を 1 つだけ探す（``--unknown-column`` の drop/keep モード向けのフォールバック）。
+
+    戻り値は (種別 または None, 未知列のタプル)。
+    候補が 0 個または複数見つかった場合は (None, ()) を返す（判定不能として扱う）。
+    """
+    exact = detect_file_type(header)
+    if exact is not None:
+        return exact, ()
+    header_set = frozenset(header)
+    if len(header_set) != len(header):
+        return None, ()
+    candidates = [ft for ft in FILE_TYPES if ft.whitelist <= header_set]
+    if len(candidates) != 1:
+        return None, ()
+    ft = candidates[0]
+    unknown = tuple(c for c in header if c not in ft.whitelist)
+    return ft, unknown
 
 
 def ap_link_columns(ft: FileType) -> tuple[str, ...]:

@@ -37,6 +37,7 @@ NAMESPACES: dict[str, tuple[T, ...]] = {
     "IP": (T.IP,),
     "SSID": (T.SSID,),
     "MAP_NAME": (T.MAP_NAME,),
+    "MAP_ID": (T.MAP_ID,),
     "VLAN": (T.VLAN,),
 }
 NAMESPACE_OF: dict[T, str] = {
@@ -79,6 +80,9 @@ def format_pseudonym(ttype: T, idx: int) -> str:
         return f"SSID_{idx:03d}"
     if ttype is T.MAP_NAME:
         return f"FLOOR_{idx:03d}"
+    if ttype is T.MAP_ID:
+        # SITE_ID（2 始まり）・AP_ID（1 始まり）とプレフィックスが衝突しない独立の名前空間。
+        return f"30000000-0000-4000-8000-{idx:012d}"
     if ttype is T.AP_MAC:
         # 02 + 系列識別子 0 + 連番。AP_0200 の MAC は ...00c8 で末尾が揃う。
         return f"020{idx:09x}"

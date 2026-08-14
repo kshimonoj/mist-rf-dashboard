@@ -8,8 +8,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# 生成した仮名 UUID（SITE_ID は 2 始まり、AP_ID は 1 始まり）
-_PSEUDO_UUID = re.compile(r"^[12]0000000-0000-4000-8000-[0-9]{12}$")
+# 生成した仮名 UUID（AP_ID は 1 始まり、SITE_ID は 2 始まり、MAP_ID は 3 始まり）
+_PSEUDO_UUID = re.compile(r"^[123]0000000-0000-4000-8000-[0-9]{12}$")
 _UUID = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )

@@ -18,11 +18,21 @@ SALT_VERSION = 1
 DEFAULT_SALT_FILENAME = ".pseudonym_salt.json"
 DEFAULT_MAP_FILENAME = ".pseudonym_map.json"
 
-# タイムシフト量は「週単位」で選ぶ。曜日と時刻が保存されるため
-# 曜日別・時間帯別の分析結果が変化せず、日付だけが失われる。
+# タイムシフトの粒度。既定は「日単位」（時刻は保存され、曜日はずれる）。
+# 「週単位」は曜日と時刻の両方が保存されるため、曜日パターン分析に使えるが
+# 再識別リスクが上がる（例: 「土曜夕方の混雑」まで特定できてしまう）。
+GRANULARITY_DAY = "day"
+GRANULARITY_WEEK = "week"
+SHIFT_GRANULARITIES = (GRANULARITY_DAY, GRANULARITY_WEEK)
+DEFAULT_SHIFT_GRANULARITY = GRANULARITY_DAY
+
+_SECONDS_PER_DAY = 24 * 3600
+_SECONDS_PER_WEEK = 7 * _SECONDS_PER_DAY
+
+_MIN_SHIFT_DAYS = 60
+_MAX_SHIFT_DAYS = 1825  # 約 5 年
 _MIN_SHIFT_WEEKS = 8
 _MAX_SHIFT_WEEKS = 260  # 約 5 年
-_SECONDS_PER_WEEK = 7 * 24 * 3600
 
 
 class SaltError(RuntimeError):
@@ -37,6 +47,7 @@ class SaltMaterial:
     time_offset_seconds: int
     created_at: str
     version: int = SALT_VERSION
+    shift_granularity: str = GRANULARITY_WEEK
 
     @property
     def fingerprint(self) -> str:
@@ -49,6 +60,7 @@ class SaltMaterial:
             "salt": self.salt.hex(),
             "time_offset_seconds": self.time_offset_seconds,
             "created_at": self.created_at,
+            "shift_granularity": self.shift_granularity,
         }
 
 
@@ -70,14 +82,22 @@ def _write_private_json(path: str, payload: dict) -> None:
     os.chmod(path, 0o600)
 
 
-def generate_salt_material() -> SaltMaterial:
+def generate_salt_material(granularity: str = DEFAULT_SHIFT_GRANULARITY) -> SaltMaterial:
     """新しいソルトとタイムオフセットを生成する。"""
-    weeks = _MIN_SHIFT_WEEKS + secrets.randbelow(_MAX_SHIFT_WEEKS - _MIN_SHIFT_WEEKS + 1)
+    if granularity not in SHIFT_GRANULARITIES:
+        raise SaltError(f"unsupported shift granularity: {granularity!r}")
+    if granularity == GRANULARITY_DAY:
+        days = _MIN_SHIFT_DAYS + secrets.randbelow(_MAX_SHIFT_DAYS - _MIN_SHIFT_DAYS + 1)
+        offset = -days * _SECONDS_PER_DAY
+    else:
+        weeks = _MIN_SHIFT_WEEKS + secrets.randbelow(_MAX_SHIFT_WEEKS - _MIN_SHIFT_WEEKS + 1)
+        offset = -weeks * _SECONDS_PER_WEEK
     return SaltMaterial(
         salt=secrets.token_bytes(32),
         # 過去方向へずらす（未来の日時が出力されると扱いづらいため）
-        time_offset_seconds=-weeks * _SECONDS_PER_WEEK,
+        time_offset_seconds=offset,
         created_at=datetime.now(timezone.utc).isoformat(),
+        shift_granularity=granularity,
     )
 
 
@@ -109,15 +129,35 @@ def load_salt(path: str) -> SaltMaterial:
     created_at = data.get("created_at")
     if not isinstance(created_at, str):
         raise SaltError("salt file field 'created_at' must be a string")
-    return SaltMaterial(salt=salt, time_offset_seconds=offset, created_at=created_at)
+
+    granularity = data.get("shift_granularity")
+    if granularity is None:
+        print(
+            f"warning: salt file has no recorded shift granularity ({path}); "
+            f"assuming '{GRANULARITY_WEEK}' to preserve consistency with logs "
+            "pseudonymized before this field existed",
+            file=sys.stderr,
+        )
+        granularity = GRANULARITY_WEEK
+    elif granularity not in SHIFT_GRANULARITIES:
+        raise SaltError(f"salt file field 'shift_granularity' has an unsupported value: {granularity!r}")
+
+    return SaltMaterial(
+        salt=salt, time_offset_seconds=offset, created_at=created_at, shift_granularity=granularity
+    )
 
 
 def save_salt(path: str, material: SaltMaterial) -> None:
     _write_private_json(path, material.to_json())
 
 
-def load_or_create_salt(path: str, *, quiet: bool = False) -> tuple[SaltMaterial, bool]:
+def load_or_create_salt(
+    path: str, *, granularity: str = DEFAULT_SHIFT_GRANULARITY, quiet: bool = False
+) -> tuple[SaltMaterial, bool]:
     """ソルトファイルを読み込む。無ければ生成して 0600 で保存する。
+
+    ``granularity`` は新規生成する場合にのみ使う。既存ファイルの粒度は
+    ファイルに記録された値（無ければ ``week``）をそのまま使う。
 
     戻り値は (ソルト, 新規生成したか)。
     """
@@ -131,7 +171,7 @@ def load_or_create_salt(path: str, *, quiet: bool = False) -> tuple[SaltMaterial
             )
         return material, False
 
-    material = generate_salt_material()
+    material = generate_salt_material(granularity)
     save_salt(path, material)
     if not quiet:
         print(

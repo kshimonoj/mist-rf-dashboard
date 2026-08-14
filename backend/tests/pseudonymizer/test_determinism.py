@@ -119,7 +119,7 @@ def test_time_offset_identical_across_files_and_preserves_deltas(indir, tmp_path
     assert len(offsets) == 1, "ファイル／行ごとにオフセットが異なる"
     offset = offsets.pop()
     assert offset != 0
-    assert offset % (7 * 24 * 3600) == 0, "週単位のシフトなら曜日と時刻が保存される"
+    assert offset % (24 * 3600) == 0, "日単位のシフト（既定）なら時刻は保存される"
 
     # ファイル間の時刻差が保存されていること
     ap = read_csv(out / "ap_metrics_20240101_0900_TZT.csv")
