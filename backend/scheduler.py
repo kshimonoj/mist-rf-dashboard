@@ -78,6 +78,7 @@ ALL_CSV_COLUMNS = [
     "radio_6_channel", "radio_6_bandwidth", "radio_6_tx_power",
     "radio_6_utilization", "radio_6_util_tx", "radio_6_util_rx_in_bss", "radio_6_util_non_wifi",
     "radio_6_noise_floor",
+    "map_id", "x_m", "y_m",
 ]
 
 
@@ -347,9 +348,15 @@ async def poll_all_sites():
                     r5 = _extract_radio_stats(device, "band_5")
                     r6 = _extract_radio_stats(device, "band_6")
 
+                    # マップ未配置の AP は応答にキー自体が無いことがある
+                    map_id = device.get("map_id")
+                    x_m = device.get("x_m")
+                    y_m = device.get("y_m")
+
                     db.add(ApMetrics(
                         site_id=site_id, ap_id=ap_id, ap_name=ap_name, model=model, mac=mac,
                         timestamp=now, num_clients=num_clients, status=status,
+                        map_id=map_id, x_m=x_m, y_m=y_m,
                         radio_24_channel=r24["channel"],
                         radio_24_bandwidth=r24["bandwidth"],
                         radio_24_utilization=r24["util"],
@@ -995,6 +1002,9 @@ async def save_hourly_logs():
                         "radio_6_util_rx_in_bss": r.radio_6_util_rx_in_bss,
                         "radio_6_util_non_wifi": r.radio_6_util_non_wifi,
                         "radio_6_noise_floor": r.radio_6_noise_floor,
+                        "map_id": r.map_id,
+                        "x_m": r.x_m,
+                        "y_m": r.y_m,
                     })
 
             site_count = len({r.site_id for r in rows})

@@ -64,6 +64,13 @@ def migrate_db():
                 ("radio_6_util_non_wifi", "FLOAT"),
             ])
 
+            # ap_metrics: フロアマップ座標カラム追加
+            _add_columns(conn, "ap_metrics", [
+                ("map_id", "VARCHAR"),
+                ("x_m", "FLOAT"),
+                ("y_m", "FLOAT"),
+            ])
+
             # app_settings: monitored_site_ids カラム追加
             _add_columns(conn, "app_settings", [
                 ("monitored_site_ids", "TEXT"),

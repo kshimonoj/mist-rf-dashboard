@@ -176,9 +176,15 @@ class FileType:
         return frozenset(self.columns)
 
 
-AP_METRICS_COLUMNS: tuple[str, ...] = (
+#: 33 列版（座標列追加前。過去ログとの互換のため別種別として残す）
+AP_METRICS_V1_COLUMNS: tuple[str, ...] = (
     "timestamp", "site_id", "site_name", "ap_id", "ap_name", "model", "mac",
     "status", "num_clients", *RADIO_COLUMNS,
+)
+
+#: 36 列版（末尾にフロアマップ座標を追加）
+AP_METRICS_COLUMNS: tuple[str, ...] = (
+    *AP_METRICS_V1_COLUMNS, "map_id", "x_m", "y_m",
 )
 
 AP_EVENTS_COLUMNS: tuple[str, ...] = (
@@ -222,6 +228,12 @@ FILE_TYPES: tuple[FileType, ...] = (
         overrides={"mac": T.AP_MAC},
     ),
     FileType(
+        key="ap_metrics_v1",
+        # 座標列追加前（33 列）の過去ログ。ヘッダー完全一致判定のため別種別として残す
+        columns=AP_METRICS_V1_COLUMNS,
+        overrides={"mac": T.AP_MAC},
+    ),
+    FileType(
         key="ap_events",
         # ap_events_backfill_*.csv も同じ列構成なので、この種別に吸収される
         columns=AP_EVENTS_COLUMNS,
@@ -251,7 +263,8 @@ FILE_TYPES_BY_KEY: dict[str, FileType] = {ft.key: ft for ft in FILE_TYPES}
 
 # 種別ごとの想定列数（定義ミスを import 時に検出するため）
 EXPECTED_COLUMN_COUNTS: dict[str, int] = {
-    "ap_metrics": 33,
+    "ap_metrics": 36,
+    "ap_metrics_v1": 33,
     "ap_events": 11,
     "client_metrics": 36,
     "sle_metrics": 28,

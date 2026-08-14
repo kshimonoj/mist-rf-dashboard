@@ -94,6 +94,9 @@ async def create_snapshot() -> dict[str, Any]:
                     "radio_6_util_rx_in_bss": r.radio_6_util_rx_in_bss,
                     "radio_6_util_non_wifi": r.radio_6_util_non_wifi,
                     "radio_6_noise_floor": r.radio_6_noise_floor,
+                    "map_id": r.map_id,
+                    "x_m": r.x_m,
+                    "y_m": r.y_m,
                 })
 
         stat = os.stat(filepath)

@@ -34,7 +34,10 @@ from pseudonymizer.schemas import (
 # ---------------------------------------------------------------------------
 
 #: 既定で DataFrame まで読み込む種別（他の種別は件数のみ数える）
-DEFAULT_FILE_TYPES: tuple[str, ...] = ("ap_metrics", "ap_events")
+DEFAULT_FILE_TYPES: tuple[str, ...] = ("ap_metrics", "ap_metrics_v1", "ap_events")
+
+#: ap_metrics として結合する種別（座標列追加前後のバージョン違い）
+METRICS_FILE_TYPES: frozenset[str] = frozenset({"ap_metrics", "ap_metrics_v1"})
 
 #: ギャップ判定のしきい値係数（推定間隔 × この値を超えたら欠測とみなす）
 DEFAULT_GAP_FACTOR: float = 1.5
@@ -55,7 +58,7 @@ MAC_COLUMNS: frozenset[str] = frozenset({"mac", "ap_mac", "bssid"})
 
 #: ap_metrics で必ず文字列として読む列（先頭ゼロ落ち・数値化を防ぐ）
 _METRICS_STR_COLUMNS: tuple[str, ...] = (
-    "site_id", "site_name", "ap_id", "ap_name", "model", "mac", "status",
+    "site_id", "site_name", "ap_id", "ap_name", "model", "mac", "status", "map_id",
 )
 
 #: ap_events は全列一致で重複判定するため、いったん全列を文字列で読む。
@@ -630,7 +633,7 @@ def load(
                     report.warnings.append(f"読み込みに失敗したファイル: {path.name} ({type(exc).__name__})")
                     continue
                 st.rows += len(df)
-                (metrics_parts if ft.key == "ap_metrics" else events_parts).append(df)
+                (metrics_parts if ft.key in METRICS_FILE_TYPES else events_parts).append(df)
             else:
                 st.rows += _count_csv_rows(path)
 
@@ -657,7 +660,7 @@ def load(
                         )
                         continue
                     st.rows += len(df)
-                    (metrics_parts if ft.key == "ap_metrics" else events_parts).append(df)
+                    (metrics_parts if ft.key in METRICS_FILE_TYPES else events_parts).append(df)
                 else:
                     st.rows += nrows
         else:
@@ -751,6 +754,8 @@ def _finalize_metrics(parts: list[pd.DataFrame], report: LoadReport) -> pd.DataF
         return empty
 
     df = pd.concat(parts, ignore_index=True)
+    # ap_metrics_v1（座標列なし）だけが入力の場合でも、列は常に AP_METRICS_COLUMNS 全体を保証する
+    df = df.reindex(columns=columns)
     df["timestamp"] = _parse_timestamps(df["timestamp"])
     bad = int(df["timestamp"].isna().sum())
     if bad:
@@ -764,8 +769,9 @@ def _finalize_metrics(parts: list[pd.DataFrame], report: LoadReport) -> pd.DataF
     df = df.sort_values(["ap_id", "timestamp"], kind="stable")
     df = df[~df.duplicated(subset=["ap_id", "timestamp"], keep="first")]
     removed = before - len(df)
-    if "ap_metrics" in report.file_stats:
-        report.file_stats["ap_metrics"].duplicates_removed = removed
+    for key in METRICS_FILE_TYPES:
+        if key in report.file_stats:
+            report.file_stats[key].duplicates_removed = removed
     return df.reset_index(drop=True)
 
 

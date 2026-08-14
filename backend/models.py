@@ -42,6 +42,10 @@ class ApMetrics(Base):
     radio_6_noise_floor = Column(Float, nullable=True)
     radio_6_tx_power = Column(Float, nullable=True)
     status = Column(String, default="connected")
+    # フロアマップ上の位置（マップ未配置の AP は NULL）
+    map_id = Column(String, nullable=True)
+    x_m = Column(Float, nullable=True)
+    y_m = Column(Float, nullable=True)
 
 
 class ClientMetrics(Base):
