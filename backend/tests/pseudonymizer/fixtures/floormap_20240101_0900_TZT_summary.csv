@@ -1,0 +1,3 @@
+timestamp,site_name,map_name,band,channel,ap_count,ap_list,has_interference
+2024-01-01 09:00:00,TestSite Alpha,テスト棟 1F,5,36,2,"TEST-AP-01,TEST-AP-02",True
+2024-01-01 09:00:00,TestSite Alpha,Test Bldg 2F,24,1,1,TEST-AP-02,False

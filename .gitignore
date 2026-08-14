@@ -35,5 +35,10 @@ Thumbs.db
 # Logs
 *.log
 
+# Pseudonymizer secrets (salt / mapping must never be committed)
+*.salt.json
+.pseudonym_salt.json
+.pseudonym_map.json
+
 # Instructions
 instructions/

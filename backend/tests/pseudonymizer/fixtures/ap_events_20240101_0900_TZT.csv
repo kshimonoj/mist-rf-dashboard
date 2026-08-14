@@ -1,0 +1,3 @@
+event_timestamp,site_name,ap_name,ap_mac,event_type,reason,band,channel,pre_channel,bandwidth,pre_bandwidth
+2024-01-01 09:00:00,TestSite Alpha,TEST-AP-01,aabbccddee01,AP_RESTARTED,power_cycle,,,,,
+2024-01-01 09:05:00,TestSite Alpha,TEST-AP-02,aabbccddee02,AP_RADAR_DETECTED,,5,52,36,80,80
