@@ -205,6 +205,39 @@ docker compose up -d
 | Frontend (Next.js) | 3007 | 3000 |
 | Backend (FastAPI) | 8008 | 8000 |
 
+## Hang AP Detection (offline log analysis)
+
+`backend/hangap/` analyses exported Mist logs offline (no network access, no LLM calls):
+
+- `hangap.loader.load()` merges the split CSV / XLSX log files, normalises them, and reports
+  duplicates and **gaps** (missing sampling periods).
+- `hangap.detector.detect()` finds zero-client intervals — an AP that stays `connected` while
+  its client count sits at zero — and correlates AP events (±30 min by default) around the end
+  of each interval.
+
+```python
+from hangap import detect, load
+
+res = load("/path/to/logs/2026-08-09")
+df = detect(res.metrics, res.events, res.gaps,
+            window_start="2026-08-09 16:00", window_end="2026-08-09 22:00")
+```
+
+Always pass `gaps`. Without it, a zero interval is silently joined across a missing period and
+the zero-sample count becomes too large — it never raises an error, so the mistake is hard to
+notice.
+
+### `min_zero_samples` counts samples, not time
+
+**The sampling interval differs per environment** (measured: 30 s in the demo environment,
+5 min at customer sites). The default `min_zero_samples=5` therefore means 25 minutes at a
+5-minute interval but only **2.5 minutes** at a 30-second interval. When the interval is
+unknown or mixed, use `min_zero_duration` (a time span) instead — it takes precedence over
+`min_zero_samples`. `hangap.loader` reports the estimated interval per AP, so check it first.
+
+Ongoing intervals (`継続中`) and site-wide exodus candidates (`退場疑い=True`) are kept in the
+result on purpose; filtering is left to the caller.
+
 ## Data Persistence
 
 All data is stored in the `./data/` directory:
