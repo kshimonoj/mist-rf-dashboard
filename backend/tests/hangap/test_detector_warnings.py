@@ -21,6 +21,9 @@ START = datetime(2026, 1, 1, 9, 0, 5)
 SAFE_START = START + timedelta(seconds=INTERVAL * 2)
 SAFE_END = START + timedelta(seconds=INTERVAL * 8)
 
+#: _rows(12) のデータ終端（START + 55min）
+DATA_END_12 = START + timedelta(seconds=INTERVAL * 11)
+
 
 def run(tmp_path, rows, events=None, **kwargs):
     S.write_metrics(tmp_path / "ap_metrics.csv", rows)
@@ -101,3 +104,92 @@ def test_no_window_end_means_no_end_coverage_warning(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         run(tmp_path, rows, window_start=SAFE_START, window_end=None)
+
+
+def test_no_warning_when_window_end_deficit_is_below_log_save_interval(tmp_path):
+    """window_end への不足がログ保存間隔未満なら警告しない（毎正時保存の遅延は仕様どおり）。"""
+    rows = _rows(12)  # データ終端は START + 55min
+    log_save_interval = timedelta(minutes=60)
+    window_end = DATA_END_12 + timedelta(minutes=30)  # 不足30分 < 60分
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        run(
+            tmp_path, rows,
+            window_start=SAFE_START, window_end=window_end,
+            log_save_interval=log_save_interval,
+        )
+
+
+def test_warns_when_window_end_deficit_exceeds_log_save_interval(tmp_path):
+    """window_end への不足がログ保存間隔以上なら、これまでどおり警告する。"""
+    rows = _rows(12)  # データ終端は START + 55min
+    log_save_interval = timedelta(minutes=60)
+    window_end = DATA_END_12 + timedelta(minutes=90)  # 不足90分 >= 60分
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run(
+            tmp_path, rows,
+            window_start=SAFE_START, window_end=window_end,
+            log_save_interval=log_save_interval,
+        )
+
+    messages = [str(w.message) for w in caught]
+    assert any("window_end" in m and "届いていません" in m and "継続中" in m for m in messages)
+
+
+def test_window_start_warning_is_unaffected_by_log_save_interval(tmp_path):
+    """window_start 側の警告は log_save_interval に関係なく従来どおり出る。"""
+    rows = _rows(12)
+    window_start = START - timedelta(minutes=5)  # データより前（不足はログ保存間隔よりずっと小さい）
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run(
+            tmp_path, rows,
+            window_start=window_start, window_end=SAFE_END,
+            log_save_interval=timedelta(minutes=60),
+        )
+
+    messages = [str(w.message) for w in caught]
+    assert any("window_start" in m and "より前" in m for m in messages)
+
+
+def test_no_warning_when_event_deficit_is_below_log_save_interval(tmp_path):
+    """イベント側の不足がログ保存間隔未満なら警告しない。"""
+    rows = _rows(20)  # メトリクス自体は window_end を十分カバーする
+    window_end = START + timedelta(seconds=INTERVAL * 15)
+    event_window = timedelta(minutes=30)
+    required = window_end + event_window
+    events = [S.event_row(required - timedelta(minutes=20))]  # 不足20分 < 60分
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        run(
+            tmp_path, rows, events=events,
+            window_start=SAFE_START, window_end=window_end,
+            event_window=event_window,
+            log_save_interval=timedelta(minutes=60),
+        )
+
+
+def test_warns_when_event_deficit_exceeds_log_save_interval(tmp_path):
+    """イベント側の不足がログ保存間隔以上なら、これまでどおり警告する。"""
+    rows = _rows(20)
+    window_end = START + timedelta(seconds=INTERVAL * 15)
+    event_window = timedelta(minutes=30)
+    required = window_end + event_window
+    events = [S.event_row(required - timedelta(minutes=90))]  # 不足90分 >= 60分
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run(
+            tmp_path, rows, events=events,
+            window_start=SAFE_START, window_end=window_end,
+            event_window=event_window,
+            log_save_interval=timedelta(minutes=60),
+        )
+
+    messages = [str(w.message) for w in caught]
+    assert any("event_window" in m and "イベント" in m and "届いていません" in m for m in messages)

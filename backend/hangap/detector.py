@@ -51,6 +51,11 @@ DEFAULT_MIN_ZERO_SAMPLES: int = 5
 #: イベント相関の窓（ゼロ終了 ± この時間）
 DEFAULT_EVENT_WINDOW: timedelta = timedelta(minutes=30)
 
+#: ログ保存間隔（既定）。History Log は毎正時保存のため、window_end を「現在時刻」に
+#: 設定すると必ずこの分だけデータ終端が window_end に届かない。この分の不足は
+#: 「取りこぼし」ではなく仕様どおりの遅延なので、カバレッジ不足警告のしきい値に使う。
+DEFAULT_LOG_SAVE_INTERVAL: timedelta = timedelta(minutes=60)
+
 #: 「退場疑い」と判定するサイト全体変化率のしきい値（区間中に全体が半減）
 DEFAULT_EXODUS_THRESHOLD: float = -0.5
 
@@ -262,6 +267,7 @@ def _warn_insufficient_coverage(
     window_start: pd.Timestamp | None,
     window_end: pd.Timestamp | None,
     event_window: pd.Timedelta,
+    log_save_interval: pd.Timedelta,
 ) -> None:
     """読み込んだデータが窓に対して足りない場合に警告する（エラーにはしない）。
 
@@ -269,6 +275,13 @@ def _warn_insufficient_coverage(
     必要になり、窓の外側のデータが欠けやすい。欠けたまま検出すると、窓の先頭付近の
     区間は検出漏れに、窓の右端付近の区間は「継続中」への誤分類やイベント相関の欠落に
     つながる。
+
+    window_end 側（データ終端 / イベント終端）の不足が ``log_save_interval`` 未満のときは
+    警告しない。ログ保存は毎正時のため、window_end を現在時刻にすると必ず最大 1 保存間隔分
+    のずれが生じる。これは仕様どおりの遅延であって取りこぼしではなく、毎回鳴る警告は
+    読み飛ばされる（本当に取りこぼしがあるときの警告まで無視されるようになる）。
+    window_start 側はデータそのものが窓の範囲内に存在しないという別種の情報のため、
+    この閾値の対象にしない。
     """
     if prepared.empty:
         return
@@ -288,18 +301,19 @@ def _warn_insufficient_coverage(
 
     if data_max < window_end:
         deficit = window_end - data_max
-        warnings.warn(
-            f"読み込んだデータは window_end（{_fmt_ts(window_end)}）に届いていません"
-            f"（データ終端: {_fmt_ts(data_max)}、不足 {_fmt_timedelta(deficit)}）。"
-            "窓の右端付近の区間が、実際は回復していても「継続中」と誤分類される可能性があります。",
-            stacklevel=3,
-        )
+        if deficit >= log_save_interval:
+            warnings.warn(
+                f"読み込んだデータは window_end（{_fmt_ts(window_end)}）に届いていません"
+                f"（データ終端: {_fmt_ts(data_max)}、不足 {_fmt_timedelta(deficit)}）。"
+                "窓の右端付近の区間が、実際は回復していても「継続中」と誤分類される可能性があります。",
+                stacklevel=3,
+            )
 
     if events is not None and len(events) and "event_timestamp" in events.columns:
         event_ts = pd.to_datetime(events["event_timestamp"], errors="coerce")
         events_max = event_ts.max()
         required = window_end + event_window
-        if pd.notna(events_max) and events_max < required:
+        if pd.notna(events_max) and events_max < required and required - events_max >= log_save_interval:
             deficit = required - events_max
             warnings.warn(
                 f"読み込んだイベントは window_end + event_window（{_fmt_ts(required)}）に"
@@ -406,6 +420,7 @@ def detect(
     min_zero_samples: int = DEFAULT_MIN_ZERO_SAMPLES,
     min_zero_duration: timedelta | float | str | None = None,
     event_window: timedelta | float | str = DEFAULT_EVENT_WINDOW,
+    log_save_interval: timedelta | float | str = DEFAULT_LOG_SAVE_INTERVAL,
     exodus_threshold: float = DEFAULT_EXODUS_THRESHOLD,
     rf_neighbors: pd.DataFrame | None = None,
     neighbor_context: NeighborContext | None = None,
@@ -432,6 +447,11 @@ def detect(
         長さは「最初のゼロサンプル → 最後のゼロサンプル」で測る（1 サンプルなら 0）。
         指定された場合は ``min_zero_samples`` より優先する。
     :param event_window: イベント相関の窓（ゼロ終了 ± この時間）。既定 30 分。
+    :param log_save_interval: ログ保存間隔（timedelta / 秒数 / 文字列）。既定 60 分。
+        window_end 側のカバレッジ不足警告のしきい値に使う。ログ保存は毎正時のため、
+        window_end を現在時刻にすると必ずこの分だけデータ終端が届かない
+        （仕様どおりの遅延であり取りこぼしではない）。実際のログ保存間隔が既定と異なる
+        環境では呼び出し側から実際の値を渡すこと。
     :param exodus_threshold: 退場疑いのしきい値。サイト全体変化率がこれ以下なら True。
     :param rf_neighbors: ローダの ``rf_neighbors``。``周辺AP RF隣接数``（参考列）の算出に
         しか使わない。**周辺AP判定には一切影響しない。** 省略すればその列が空になるだけ。
@@ -446,12 +466,14 @@ def detect(
 
     ``window_start`` / ``window_end`` に対して読み込み済みデータが不足している場合
     （History Log の結合漏れ等）は ``UserWarning`` を出す（エラーにはしない）。
+    ただし window_end 側は、不足が ``log_save_interval`` 未満なら警告しない。
     """
     prepared = _prepare_metrics(metrics)
     ws = pd.Timestamp(window_start) if window_start is not None else None
     we = pd.Timestamp(window_end) if window_end is not None else None
     ev_window = _as_timedelta(event_window)
-    _warn_insufficient_coverage(prepared, events, ws, we, ev_window)
+    log_interval = _as_timedelta(log_save_interval)
+    _warn_insufficient_coverage(prepared, events, ws, we, ev_window, log_interval)
 
     boundaries = _gap_boundaries(gaps)
     totals = _site_totals(prepared)

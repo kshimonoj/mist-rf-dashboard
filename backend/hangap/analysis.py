@@ -95,6 +95,9 @@ class AnalysisParams:
     event_window: pd.Timedelta = field(
         default_factory=lambda: pd.Timedelta(detector.DEFAULT_EVENT_WINDOW)
     )
+    log_save_interval: pd.Timedelta = field(
+        default_factory=lambda: pd.Timedelta(detector.DEFAULT_LOG_SAVE_INTERVAL)
+    )
     exodus_threshold: float = detector.DEFAULT_EXODUS_THRESHOLD
     gap_factor: float = loader.DEFAULT_GAP_FACTOR
     neighbor_count: int = neighbors.DEFAULT_NEIGHBOR_COUNT
@@ -336,6 +339,7 @@ def run_analysis(
             min_zero_samples=p.min_zero_samples,
             min_zero_duration=p.min_zero_duration,
             event_window=p.event_window,
+            log_save_interval=p.log_save_interval,
             exodus_threshold=p.exodus_threshold,
             neighbor_context=neighbor_context,
             neighbor_client_threshold=p.neighbor_client_threshold,
