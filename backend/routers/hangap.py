@@ -41,6 +41,9 @@ LOGS_DIR = "/app/data/logs"
 MAX_JOBS = 3
 #: 完了からこの秒数が経過したジョブは自動破棄する
 JOB_TTL_SECONDS = 3600
+#: ジョブ 1 本の最大実行時間。超えたら failed にして枠を解放する。
+#: 実測（250AP / 5,224ファイル）で 6.7 秒なので、10 分は十分な余裕がある。
+MAX_RUN_SECONDS = 600
 
 DEFAULT_RESULT_LIMIT = 100
 MAX_RESULT_LIMIT = 1000
@@ -85,6 +88,9 @@ class _Job:
     tmpdir: tempfile.TemporaryDirectory | None = None
     outputs: dict[str, Path] = field(default_factory=dict)
     discarded: bool = False
+    #: 最大実行時間を超えて打ち切った。ワーカーは止められないので走り続けるが、
+    #: 以後このジョブは「実行中」として数えず、遅れて出てきた結果も受け取らない。
+    timed_out: bool = False
 
 
 _JOBS: "OrderedDict[str, _Job]" = OrderedDict()
@@ -95,17 +101,55 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _cleanup_tmpdir(td: tempfile.TemporaryDirectory | None, job_id: str) -> None:
+    if td is None:
+        return
+    try:
+        td.cleanup()
+    except OSError as e:  # 消せなくてもジョブ管理は続ける
+        logger.warning(f"hangap: temp dir cleanup failed for {job_id}: {e}")
+
+
 def _discard(job: _Job) -> None:
     """ジョブの結果と一時ファイルを捨てる。呼び出し側で _LOCK を取ること。"""
     job.discarded = True
     job.result = None
     job.outputs = {}
     td, job.tmpdir = job.tmpdir, None
-    if td is not None:
-        try:
-            td.cleanup()
-        except OSError as e:  # 消せなくてもジョブ管理は続ける
-            logger.warning(f"hangap: temp dir cleanup failed for {job.job_id}: {e}")
+    _cleanup_tmpdir(td, job.job_id)
+
+
+def _fail_timed_out() -> None:
+    """最大実行時間を超えた実行中ジョブを failed にして**枠を解放する**。
+
+    走っているスレッドは止められない（pandas の読み込み中に割り込む手段がない）。
+    ここでできるのは「このジョブを実行中として数えるのをやめる」ことだけで、
+    そうしないとワーカーがハングした時にコンテナ再起動以外の復旧手段が無くなる。
+    遅れて出てきた結果を受け取らないよう ``timed_out`` を立てておく。
+    """
+    now = _now()
+    with _LOCK:
+        for job in _JOBS.values():
+            if job.status != STATUS_RUNNING:
+                continue
+            elapsed = (now - job.started_at).total_seconds()
+            if elapsed <= MAX_RUN_SECONDS:
+                continue
+            job.timed_out = True
+            job.status = STATUS_FAILED
+            job.finished_at = now
+            job.error = (
+                f"最大実行時間（{MAX_RUN_SECONDS} 秒）を超えました。分析を打ち切り、"
+                "次の分析を開始できる状態に戻しました。"
+                "これは「ハングが検出されなかった（0 件）」とは別の状態です。"
+            )
+            logger.warning(f"hangap: job {job.job_id} timed out after {elapsed:.0f}s")
+
+
+def _sweep() -> None:
+    """各リクエストの入口で行う後始末（タイムアウト → TTL の順）。"""
+    _fail_timed_out()
+    _purge_expired()
 
 
 def _purge_expired() -> None:
@@ -139,7 +183,48 @@ def _get_job(job_id: str) -> _Job:
 
 def _set_phase(job: _Job, phase: str) -> None:
     with _LOCK:
+        if job.timed_out:  # 打ち切り済みのジョブの進捗は書き換えない
+            return
         job.phase = phase
+
+
+@dataclass
+class _Outcome:
+    """ジョブに持たせる完了状態。**入力側は一切含めない。**"""
+
+    result: pd.DataFrame
+    summary: dict[str, Any]
+    warnings: list[str]
+    tmpdir: tempfile.TemporaryDirectory
+    outputs: dict[str, Path]
+
+
+def _analyze_and_write(job: _Job, files: list[Path]) -> _Outcome:
+    """分析して出力ファイルを書き出す。
+
+    読み込んだ入力（``ap_metrics`` などの DataFrame。実測で 50 万行規模）は
+    :class:`analysis.AnalysisResult` ごとこの関数のスコープに閉じ込め、戻り値には
+    結果（数百行）と summary だけを載せる。完了ジョブが入力を掴んだままにならない
+    のはこの境界のためなので、``AnalysisResult`` をそのままジョブへ渡さないこと。
+    """
+    res = analysis.run_analysis(files, job.params, on_phase=lambda p: _set_phase(job, p))
+    _set_phase(job, analysis.PHASE_WRITING)
+    meta = res.meta()
+    tmpdir = tempfile.TemporaryDirectory(prefix="hangap_job_")
+    base = Path(tmpdir.name)
+    stamp = job.started_at.strftime("%Y%m%d_%H%M%S")
+    outputs = {
+        "xlsx": analysis.write_xlsx(base / f"hangap_result_{stamp}.xlsx", res.result, meta),
+        "csv": analysis.write_csv(base / f"hangap_result_{stamp}.csv", res.result),
+        "summary": analysis.write_summary(base / f"hangap_result_{stamp}_summary.txt", meta),
+    }
+    return _Outcome(
+        result=res.result,
+        summary=_build_summary(res, meta),
+        warnings=res.all_warnings,
+        tmpdir=tmpdir,
+        outputs=outputs,
+    )
 
 
 def _run_job(job: _Job) -> None:
@@ -147,43 +232,39 @@ def _run_job(job: _Job) -> None:
     try:
         # 入力ファイル一覧はここで確定させる。分析中に save_hourly_logs が
         # data/logs にファイルを足しても、このジョブの結果は変わらない。
-        job.files = analysis.collect_files(LOGS_DIR)
-        res = analysis.run_analysis(
-            job.files, job.params, on_phase=lambda p: _set_phase(job, p)
-        )
-        _set_phase(job, analysis.PHASE_WRITING)
-        meta = res.meta()
-        tmpdir = tempfile.TemporaryDirectory(prefix="hangap_job_")
-        base = Path(tmpdir.name)
-        stamp = job.started_at.strftime("%Y%m%d_%H%M%S")
-        outputs = {
-            "xlsx": analysis.write_xlsx(base / f"hangap_result_{stamp}.xlsx", res.result, meta),
-            "csv": analysis.write_csv(base / f"hangap_result_{stamp}.csv", res.result),
-            "summary": analysis.write_summary(
-                base / f"hangap_result_{stamp}_summary.txt", meta
-            ),
-        }
+        files = analysis.collect_files(LOGS_DIR)
+        job.files = files
+        outcome = _analyze_and_write(job, files)
         with _LOCK:
-            job.result = res.result
-            job.summary = _build_summary(res, meta)
-            job.warnings = res.all_warnings
-            job.tmpdir = tmpdir
-            job.outputs = outputs
-            job.status = STATUS_DONE
+            if job.timed_out:
+                # 打ち切り済み。枠はすでに解放されているので結果は受け取らない
+                _cleanup_tmpdir(outcome.tmpdir, job.job_id)
+            else:
+                job.result = outcome.result
+                job.summary = outcome.summary
+                job.warnings = outcome.warnings
+                job.tmpdir = outcome.tmpdir
+                job.outputs = outcome.outputs
+                job.status = STATUS_DONE
+        del outcome
     except analysis.AnalysisError as e:
         # ap_metrics を 1 行も読めなかった場合もここに来る。「検出 0 件」ではなく
         # 「そもそも分析対象が無かった」であり、done ではなく failed にする。
         with _LOCK:
-            job.status = STATUS_FAILED
-            job.error = str(e)
+            if not job.timed_out:
+                job.status = STATUS_FAILED
+                job.error = str(e)
     except Exception as e:  # noqa: BLE001 - ワーカースレッドで例外を落とさない
         logger.exception(f"hangap: job {job.job_id} failed")
         with _LOCK:
-            job.status = STATUS_FAILED
-            job.error = f"分析中にエラーが発生しました: {e}"
+            if not job.timed_out:
+                job.status = STATUS_FAILED
+                job.error = f"分析中にエラーが発生しました: {e}"
     finally:
         with _LOCK:
-            job.finished_at = _now()
+            if not job.timed_out:  # 打ち切り時の finished_at は打ち切り時刻のまま
+                job.finished_at = _now()
+            job.files = []  # 入力ファイル一覧も完了時に手放す
             if job.discarded:  # 実行中に DELETE された。書き出したファイルも消す
                 _JOBS.pop(job.job_id, None)
                 _discard(job)
@@ -455,7 +536,7 @@ def _job_state(job: _Job) -> dict[str, Any]:
 @router.post("/analyze", status_code=202)
 def start_analysis(body: dict | None = Body(default=None)):
     """分析ジョブを開始する。同時に実行できるジョブは 1 つまで（実行中は 409）。"""
-    _purge_expired()
+    _sweep()
     params = _build_params(body)
 
     # 実行中判定と登録は必ず同じロックの中で行う。分けると、2 本の POST が
@@ -472,7 +553,9 @@ def start_analysis(body: dict | None = Body(default=None)):
             )
         job = _Job(job_id=uuid.uuid4().hex, params=params, started_at=_now())
         while len(_JOBS) >= MAX_JOBS:
-            # 実行中のジョブはこの時点で存在しない（すぐ上で 409 にしている）
+            # status=running のジョブはこの時点で存在しない（すぐ上で 409 にしている）。
+            # 打ち切り済み（timed_out）のジョブはスレッドが生き残っていることがあるが、
+            # 枠としてはすでに解放済みなので、ここで捨ててよい。
             _, oldest = _JOBS.popitem(last=False)
             _discard(oldest)
         _JOBS[job.job_id] = job
@@ -491,7 +574,7 @@ def start_analysis(body: dict | None = Body(default=None)):
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str):
     """ジョブの状態・進捗・サマリーを返す。"""
-    _purge_expired()
+    _sweep()
     return _job_state(_get_job(job_id))
 
 
@@ -505,7 +588,7 @@ def get_job_result(
     order: str = Query("asc", description="asc | desc"),
 ):
     """結果テーブルを返す。列は detector.RESULT_COLUMNS と同一・同順。"""
-    _purge_expired()
+    _sweep()
     job = _get_job(job_id)
     if job.status != STATUS_DONE or job.result is None:
         raise HTTPException(
@@ -550,7 +633,7 @@ def get_job_result(
 @router.get("/jobs/{job_id}/download")
 def download_job_result(job_id: str, format: str = Query("xlsx", description="xlsx | csv")):
     """CLI と同じ書式のファイルを返す（書き出しは hangap.analysis で共用）。"""
-    _purge_expired()
+    _sweep()
     job = _get_job(job_id)
     if format not in _MEDIA_TYPES:
         raise _bad_request("format", f"xlsx / csv で指定してください: {format!r}")
@@ -572,7 +655,7 @@ def download_job_result(job_id: str, format: str = Query("xlsx", description="xl
 @router.delete("/jobs/{job_id}")
 def delete_job(job_id: str):
     """ジョブの結果と一時ファイルを破棄する。"""
-    _purge_expired()
+    _sweep()
     with _LOCK:
         job = _get_job(job_id)
         _discard(job)

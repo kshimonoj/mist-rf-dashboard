@@ -7,13 +7,17 @@ API 側で書き直すと真っ先にここが落ちる。
 """
 from __future__ import annotations
 
+import gc
 import tempfile
 import threading
 import time
+import types
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import _synth as S
+import numpy as np
+import pandas as pd
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -626,3 +630,186 @@ def test_parameters_are_actually_applied(api_client):
 
     windowed = _analyze(client, {"from": "2026-01-01 09:00", "to": "2026-01-01 10:02"})
     assert windowed["summary"]["detected_intervals"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 13. 最大実行時間（ワーカーがハングしても枠を解放する）
+# ---------------------------------------------------------------------------
+
+
+def test_timed_out_job_fails_and_frees_the_slot(api_client, monkeypatch):
+    """最大実行時間を超えたジョブは failed になり、次のジョブを開始できること。
+
+    枠が空かないと「ボタンを押しても永久に何も起きない」になり、復旧手段が
+    コンテナ再起動しか無くなる。
+    """
+    client, logs_dir = api_client
+    _write_hang_logs(logs_dir)
+
+    gate = threading.Event()
+    real_run = analysis.run_analysis
+
+    def gated(*args, **kwargs):
+        gate.wait(30)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(api.analysis, "run_analysis", gated)
+
+    hung_id = client.post("/api/hangap/analyze", json={}).json()["job_id"]
+    try:
+        monkeypatch.setattr(api, "MAX_RUN_SECONDS", -1)  # 開始直後を「超過」とみなす
+        state = client.get(f"/api/hangap/jobs/{hung_id}").json()
+        assert state["status"] == api.STATUS_FAILED
+        assert state["finished_at"]
+        # 打ち切ったジョブは結果を返さない
+        assert client.get(f"/api/hangap/jobs/{hung_id}/result").status_code == 409
+
+        monkeypatch.setattr(api, "MAX_RUN_SECONDS", 600)  # 以降は通常どおり
+        second = client.post("/api/hangap/analyze", json={})
+        assert second.status_code == 202, "枠が解放されていない"
+        second_id = second.json()["job_id"]
+    finally:
+        gate.set()
+
+    assert _wait_done(client, second_id)["status"] == api.STATUS_DONE
+
+    # 打ち切ったジョブのワーカーが後から結果を書き戻さないこと
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        with api._LOCK:
+            if api._JOBS[hung_id].files == []:  # finally まで到達した
+                break
+        time.sleep(0.05)
+    after = client.get(f"/api/hangap/jobs/{hung_id}").json()
+    assert after["status"] == api.STATUS_FAILED
+    assert after["summary"] is None
+    with api._LOCK:
+        assert api._JOBS[hung_id].result is None
+        assert api._JOBS[hung_id].tmpdir is None
+
+
+def test_timed_out_job_error_explains_the_reason(api_client, monkeypatch):
+    client, logs_dir = api_client
+    _write_hang_logs(logs_dir)
+
+    gate = threading.Event()
+    real_run = analysis.run_analysis
+
+    def gated(*args, **kwargs):
+        gate.wait(30)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(api.analysis, "run_analysis", gated)
+
+    job_id = client.post("/api/hangap/analyze", json={}).json()["job_id"]
+    try:
+        monkeypatch.setattr(api, "MAX_RUN_SECONDS", -1)
+        state = client.get(f"/api/hangap/jobs/{job_id}").json()
+        assert state["status"] == api.STATUS_FAILED
+        assert "最大実行時間" in state["error"]
+        # 「検出0件」と読み違えないこと
+        assert "0 件" in state["error"]
+    finally:
+        gate.set()
+
+
+# ---------------------------------------------------------------------------
+# 14. 完了時に入力データを解放する
+# ---------------------------------------------------------------------------
+
+
+#: 入力が結果よりはるかに大きいログ。1 AP あたり 313 行の入力から 1 行の結果が出る。
+_PADDED_HANG_PATTERN = [1] * 300 + HANG_PATTERN
+
+
+def _write_padded_hang_logs(logs_dir: Path, ap_count: int) -> Path:
+    rows: list[dict] = []
+    for i in range(ap_count):
+        rows += _series(f"test-ap-{i:04d}", f"TEST-AP-{i:02d}", _PADDED_HANG_PATTERN)
+    return S.write_metrics(logs_dir / "ap_metrics_20260101_1000_TST.csv", rows)
+
+
+def _reachable_data(root: object) -> tuple[list[pd.DataFrame], int]:
+    """``root`` から辿れる DataFrame と、データの合計バイト数を返す。
+
+    型・モジュール・関数は辿らない（辿るとプロセス全体に届いてしまい、何も測れない）。
+    DataFrame は memory_usage で数え、中身の配列は二重に数えない。
+    """
+    skip = (
+        type, types.ModuleType, types.FunctionType, types.MethodType,
+        types.BuiltinFunctionType, types.FrameType,
+    )
+    seen: set[int] = set()
+    frames: list[pd.DataFrame] = []
+    total = 0
+    stack: list[object] = [root]
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen or isinstance(obj, skip):
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, pd.DataFrame):
+            frames.append(obj)
+            total += int(obj.memory_usage(deep=True).sum())
+            continue
+        if isinstance(obj, pd.Series):
+            total += int(obj.memory_usage(deep=True))
+            continue
+        if isinstance(obj, np.ndarray):
+            total += int(obj.nbytes)
+            continue
+        stack.extend(gc.get_referents(obj))
+    return frames, total
+
+
+def test_finished_jobs_do_not_retain_the_input(api_client):
+    """完了ジョブが入力（実測で 516,859 行規模）を掴んだままにしないこと。
+
+    結果は数百行しかないので、保持ジョブ 3 件分のメモリは結果行数に比例する程度で
+    収まっていなければならない。入力を持ち続けると、保持ジョブ 3 件で入力 3 本分の
+    メモリを抱えることになる。
+    """
+    client, logs_dir = api_client
+    ap_count = 20
+    files = [_write_padded_hang_logs(logs_dir, ap_count)]
+
+    for _ in range(api.MAX_JOBS):
+        assert _analyze(client)["status"] == api.STATUS_DONE
+
+    gc.collect()
+    with api._LOCK:
+        assert len(api._JOBS) == api.MAX_JOBS
+        frames, retained_bytes = _reachable_data(api._JOBS)
+
+    # 到達できる DataFrame は各ジョブの結果表だけ（入力は 1 AP あたり 313 行ある）
+    assert len(frames) == api.MAX_JOBS
+    assert [len(df) for df in frames] == [ap_count] * api.MAX_JOBS
+
+    # 保持 3 件の合計が、入力 1 本分の DataFrame よりも小さいこと
+    loaded = analysis.loader.load(files)
+    input_bytes = int(loaded.metrics.memory_usage(deep=True).sum())
+    assert len(loaded.metrics) == ap_count * len(_PADDED_HANG_PATTERN)
+    assert retained_bytes < input_bytes, (
+        f"保持ジョブ {api.MAX_JOBS} 件が {retained_bytes} バイトを保持している"
+        f"（入力 1 本 = {input_bytes} バイト）"
+    )
+
+
+def test_result_and_download_work_after_the_input_is_released(api_client):
+    client, logs_dir = api_client
+    _write_padded_hang_logs(logs_dir, ap_count=3)
+    job_id = _job_id(_analyze(client))
+
+    gc.collect()
+
+    result = client.get(f"/api/hangap/jobs/{job_id}/result")
+    assert result.status_code == 200
+    body = result.json()
+    assert body["total"] == 3
+    assert len(body["rows"]) == 3
+    assert list(body["columns"]) == list(RESULT_COLUMNS)
+
+    for fmt in ("xlsx", "csv"):
+        r = client.get(f"/api/hangap/jobs/{job_id}/download?format={fmt}")
+        assert r.status_code == 200, fmt
+        assert r.content

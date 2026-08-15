@@ -725,3 +725,167 @@ export const activateCredential = (
   credentialsRequest<{ status: string; activated: string }>(
     `/api/credentials/${id}/activate`, "POST", body, settingsKey
   );
+
+// ── Hang AP analysis (/api/hangap) ────────────────────────────────────────────
+// 結果の整形（列・順序・書式）は API が返すものをそのまま使う。ここで再計算・
+// 再整形すると CLI / API / UI で結果が食い違う。
+
+export type HangapStatus = "running" | "done" | "failed";
+export type HangapPhase = "loading" | "neighbors" | "detecting" | "writing";
+
+export interface HangapFileStat {
+  file_type: string;
+  files: number;
+  rows: number;
+  duplicates_removed: number;
+  loaded: number;
+}
+
+export interface HangapSitePeriod {
+  site_id: string;
+  site_name: string;
+  rows: number;
+  ap_count: number;
+  first: string | null;
+  last: string | null;
+}
+
+export interface HangapLoaderInfo {
+  files_scanned: number;
+  gap_factor: number;
+  file_stats: HangapFileStat[];
+  unclassified: number;
+  sampling_interval_seconds: number | null;
+  interval_groups: { interval_seconds: number; ap_count: number }[];
+  gaps: {
+    count: number;
+    total_seconds: number;
+    max_seconds: number;
+    total_missing_samples: number;
+  };
+  metrics_period: (string | null)[] | null;
+  events_period: (string | null)[] | null;
+  metrics_rows: number;
+  events_rows: number;
+  ap_count: number;
+  rf_neighbors_rows: number;
+  rf_neighbors_latest: string | null;
+  site_periods: HangapSitePeriod[];
+  report_text: string;
+}
+
+export interface HangapSummary {
+  detected_intervals: number;
+  /** 回復状況の内訳（キーはバックエンドの STATUS_ORDER。フロントで定義し直さない） */
+  recovery_status: Record<string, number>;
+  /** 周辺AP判定の内訳（キーはバックエンドの VERDICT_ORDER） */
+  neighbor_verdict: Record<string, number>;
+  exodus_suspected: number;
+  event_matched_intervals: number;
+  condition_text: string;
+  result_summary_text: string;
+  loader: HangapLoaderInfo;
+}
+
+export interface HangapJob {
+  job_id: string;
+  status: HangapStatus;
+  phase: HangapPhase;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  summary: HangapSummary | null;
+  warnings: string[];
+}
+
+/** 結果セルの値。時刻はログ由来の naive な文字列（UTC 変換はしない）。 */
+export type HangapCell = string | number | boolean | null;
+
+export interface HangapResultPage {
+  job_id: string;
+  total: number;
+  offset: number;
+  limit: number;
+  columns: string[];
+  rows: Record<string, HangapCell>[];
+}
+
+/** 分析条件。未指定（undefined）の項目は送らず、バックエンドの既定値に任せる。 */
+export interface HangapAnalyzeBody {
+  from?: string;
+  to?: string;
+  min_zero_samples?: number;
+  event_window_minutes?: number;
+  exodus_threshold?: number;
+  gap_factor?: number;
+  neighbor_count?: number;
+  max_distance_m?: number;
+  neighbor_client_threshold?: number;
+  truncated_warn_ratio?: number;
+}
+
+export interface HangapStartResult {
+  job_id: string;
+  /** 409（別の分析が実行中）。その実行中ジョブの job_id を返す */
+  conflict: boolean;
+  message?: string;
+}
+
+async function hangapDetail(res: Response): Promise<string | undefined> {
+  try {
+    const detail = (await res.json()).detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object") return detail.message;
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+export async function startHangapAnalysis(body: HangapAnalyzeBody): Promise<HangapStartResult> {
+  const res = await fetch(`${API_BASE}/api/hangap/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 409) {
+    let detail: { message?: string; job_id?: string } = {};
+    try { detail = (await res.json()).detail ?? {}; } catch { /* ignore */ }
+    return {
+      job_id: detail.job_id ?? "",
+      conflict: true,
+      message: detail.message ?? "別の分析が実行中です。",
+    };
+  }
+  if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP analyze error ${res.status}`);
+  return { job_id: (await res.json()).job_id, conflict: false };
+}
+
+/** ジョブの状態。破棄済み・TTL 切れ（404）は null を返す。 */
+export async function fetchHangapJob(jobId: string): Promise<HangapJob | null> {
+  const res = await fetch(`${API_BASE}/api/hangap/jobs/${jobId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP job error ${res.status}`);
+  return res.json();
+}
+
+export async function fetchHangapResult(
+  jobId: string,
+  opts: { offset?: number; limit?: number; status?: string; sort?: string; order?: "asc" | "desc" } = {}
+): Promise<HangapResultPage> {
+  const qs = new URLSearchParams();
+  if (opts.offset) qs.set("offset", String(opts.offset));
+  if (opts.limit) qs.set("limit", String(opts.limit));
+  if (opts.status) qs.set("status", opts.status);
+  if (opts.sort) {
+    qs.set("sort", opts.sort);
+    qs.set("order", opts.order ?? "asc");
+  }
+  const res = await fetch(`${API_BASE}/api/hangap/jobs/${jobId}/result?${qs.toString()}`);
+  if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP result error ${res.status}`);
+  return res.json();
+}
+
+/** ダウンロードは常に全列（API の出力をそのまま渡す） */
+export const getHangapDownloadUrl = (jobId: string, format: "xlsx" | "csv") =>
+  `${API_BASE}/api/hangap/jobs/${jobId}/download?format=${format}`;
