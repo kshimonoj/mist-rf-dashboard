@@ -42,3 +42,6 @@ Thumbs.db
 
 # Instructions
 instructions/
+
+# Host venv (backend tests, e.g. golden-data comparison)
+backend/venv/
