@@ -2,6 +2,8 @@
 
 ``hangap.loader.load()`` / ``hangap.detector.detect()`` / ``hangap.topology.analyze()`` /
 ``hangap.neighbors.build_context()`` のロジックはここでは再実装しない。
+analyze の本体（分析パイプラインと出力の書き出し）は ``hangap.analysis`` にあり、
+API（``routers/hangap.py``）と共用する。
 ネットワークアクセス・LLM 呼び出しは行わない。
 """
 from __future__ import annotations
@@ -9,35 +11,17 @@ from __future__ import annotations
 import argparse
 import glob as globlib
 import sys
-import warnings
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
-import pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
-
-from . import detector, loader, neighbors, topology
+from . import analysis, detector, loader, neighbors, topology
 
 EXIT_OK = 0
 EXIT_INPUT_ERROR = 1
 EXIT_OUTPUT_ERROR = 2
 
-_DATA_SUFFIXES = loader.CSV_SUFFIXES | loader.EXCEL_SUFFIXES
-
-_TIME_FORMATS: tuple[str, ...] = ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S")
-
-_RECOVERED_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-
-_STATUS_ORDER: tuple[str, ...] = (
-    detector.STATUS_RECOVERED,
-    detector.STATUS_ONGOING,
-    detector.STATUS_CUT_GAP,
-    detector.STATUS_CUT_AP_DOWN,
-)
+_DATA_SUFFIXES = analysis.DATA_SUFFIXES
 
 
 class CliError(RuntimeError):
@@ -180,201 +164,6 @@ def _check_output_not_input(out_dir: str, raw_paths: Sequence[str], files: Seque
 
 
 # ---------------------------------------------------------------------------
-# 時刻・時間指定のパース
-# ---------------------------------------------------------------------------
-
-
-def _parse_time(text: str, label: str) -> pd.Timestamp:
-    text = text.strip()
-    for fmt in _TIME_FORMATS:
-        try:
-            return pd.Timestamp(datetime.strptime(text, fmt))
-        except ValueError:
-            continue
-    try:
-        ts = pd.Timestamp(text)
-    except Exception as exc:  # 多様な例外を投げうる外部入力の境界
-        raise CliError(f"{label} を解釈できません: {text!r}") from exc
-    if ts.tzinfo is not None:
-        raise CliError(f"{label} にタイムゾーンは付けられません（ログが naive のため）: {text!r}")
-    return ts
-
-
-def _parse_duration(text: str, label: str) -> pd.Timedelta:
-    try:
-        td = pd.Timedelta(text)
-    except Exception as exc:
-        raise CliError(f"{label} を解釈できません: {text!r}") from exc
-    if pd.isna(td):
-        raise CliError(f"{label} を解釈できません: {text!r}")
-    return td
-
-
-# ---------------------------------------------------------------------------
-# 整形ヘルパ
-# ---------------------------------------------------------------------------
-
-
-def _fmt_dt(dt: object) -> str:
-    if dt is None or pd.isna(dt):
-        return "-"
-    return pd.Timestamp(dt).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _fmt_period(period: tuple | None) -> str:
-    if period is None:
-        return "（なし）"
-    return f"{_fmt_dt(period[0])} 〜 {_fmt_dt(period[1])}"
-
-
-def _fmt_window(ws: pd.Timestamp | None, we: pd.Timestamp | None) -> str:
-    left = _fmt_dt(ws) if ws is not None else "(指定なし)"
-    right = _fmt_dt(we) if we is not None else "(指定なし)"
-    return f"{left} 〜 {right}"
-
-
-def _fmt_td(td: pd.Timedelta) -> str:
-    total = td.total_seconds()
-    if total % 3600 == 0 and total >= 3600:
-        return f"{total / 3600:g}h"
-    if total % 60 == 0:
-        return f"{total / 60:g}m"
-    return f"{total:g}s"
-
-
-def _condition_text(
-    args: argparse.Namespace,
-    ws: pd.Timestamp | None,
-    we: pd.Timestamp | None,
-    min_duration: pd.Timedelta | None,
-    event_window: pd.Timedelta,
-    n_files: int,
-) -> str:
-    zero_desc = (
-        f"min_zero_duration={_fmt_td(min_duration)}"
-        if min_duration is not None
-        else f"min_zero_samples={args.min_zero_samples}"
-    )
-    return (
-        f"分析条件: 窓 {_fmt_window(ws, we)} / {zero_desc} / "
-        f"event_window={_fmt_td(event_window)} / exodus_threshold={args.exodus_threshold} / "
-        f"gap_factor={args.gap_factor} / 入力ファイル数={n_files} / "
-        f"neighbor_count={args.neighbor_count} / max_distance_m={args.max_distance_m:g} / "
-        f"neighbor_client_threshold={args.neighbor_client_threshold:g}（周辺AP判定の既定値は暫定）"
-    )
-
-
-def _coverage_and_warnings_text(
-    report: loader.LoadReport,
-    detector_warnings: list[str],
-    quality_warnings: Sequence[str] = (),
-) -> str:
-    lines = [
-        f"データ範囲: metrics {_fmt_period(report.metrics_period)} / "
-        f"events {_fmt_period(report.events_period)}"
-    ]
-    all_warnings = list(report.warnings) + list(detector_warnings) + list(quality_warnings)
-    if all_warnings:
-        lines.append(f"警告 {len(all_warnings)} 件:")
-        lines.extend(f"  ⚠ {w}" for w in all_warnings)
-    else:
-        lines.append("警告: なし")
-    return "\n".join(lines)
-
-
-def _format_result_summary(df: pd.DataFrame) -> str:
-    total = len(df)
-    lines = [f"検出区間数: {total}"]
-    if total:
-        counts = df["回復状況"].value_counts()
-        for status in _STATUS_ORDER:
-            lines.append(f"  {status}: {int(counts.get(status, 0))}")
-        lines.append(f"退場疑い: {int(df['退場疑い'].sum())} 件")
-        lines.append(f"イベントが該当した区間数: {int((df['AP Event（±30分）'] == 'あり').sum())} 件")
-        # 周辺AP判定は判断材料であって絞り込み条件ではない。内訳を出すだけで行は落とさない。
-        verdicts = df["周辺AP判定"].value_counts()
-        lines.append("周辺AP判定:")
-        for verdict in (neighbors.VERDICT_PRESENT, neighbors.VERDICT_ABSENT,
-                        neighbors.VERDICT_UNKNOWN):
-            lines.append(f"  {verdict}: {int(verdicts.get(verdict, 0))}")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# 出力
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _Meta:
-    title: str
-    condition_text: str
-    coverage_and_warnings_text: str
-    result_summary_text: str
-
-
-def _cell_value(value: object) -> object:
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    if isinstance(value, pd.Timestamp):
-        return value.to_pydatetime()
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except (TypeError, ValueError):
-            return value
-    return value
-
-
-def _write_xlsx(path: Path, df: pd.DataFrame, meta: _Meta) -> None:
-    columns = detector.RESULT_COLUMNS
-    ncols = len(columns)
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "ハングAP分析結果"
-
-    ws.cell(row=1, column=1, value=meta.title).font = Font(bold=True, size=14)
-    ws.cell(row=2, column=1, value=meta.condition_text)
-    c3 = ws.cell(row=3, column=1, value=meta.coverage_and_warnings_text)
-    c3.alignment = Alignment(wrap_text=True, vertical="top")
-
-    header_row = 5
-    for col, name in enumerate(columns, start=1):
-        cell = ws.cell(row=header_row, column=col, value=name)
-        cell.font = Font(bold=True)
-
-    status_col = columns.index("回復状況") + 1
-    for r, row in enumerate(df.itertuples(index=False, name=None), start=header_row + 1):
-        for col, value in enumerate(row, start=1):
-            ws.cell(row=r, column=col, value=_cell_value(value))
-        if row[status_col - 1] == detector.STATUS_RECOVERED:
-            for col in range(1, ncols + 1):
-                ws.cell(row=r, column=col).fill = _RECOVERED_FILL
-
-    for col in range(1, ncols + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 18
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(path)
-
-
-def _write_summary(path: Path, meta: _Meta) -> None:
-    text = "\n\n".join([
-        meta.title,
-        meta.condition_text,
-        meta.coverage_and_warnings_text,
-        meta.result_summary_text,
-    ])
-    path.write_text(text + "\n", encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
 # 本体
 # ---------------------------------------------------------------------------
 
@@ -466,90 +255,56 @@ def run_analyze(args: argparse.Namespace) -> int:
     files = resolve_inputs(raw_paths)
     _check_output_not_input(args.out, raw_paths, files)
 
-    ws = _parse_time(args.window_from, "--from") if args.window_from else None
-    we = _parse_time(args.window_to, "--to") if args.window_to else None
-    min_duration = (
-        _parse_duration(args.min_zero_duration, "--min-zero-duration")
-        if args.min_zero_duration
-        else None
-    )
-    event_window = _parse_duration(args.event_window, "--event-window")
-
-    load_result = loader.load(files, gap_factor=args.gap_factor)
-    report = load_result.report
-
-    if report.metrics_rows == 0 and report.events_rows == 0 and report.unclassified:
-        sample = ", ".join(report.unclassified[:5])
-        more = " ..." if len(report.unclassified) > 5 else ""
-        raise CliError(
-            "入力ファイルの種別を判定できませんでした"
-            f"（ap_metrics / ap_events のいずれにも一致しません）: {sample}{more}"
-        )
-
-    # 近傍AP のインデックスは検出と explain で共有する（座標は AP の最新行から 1 度だけ取る）
-    neighbor_context = neighbors.build_context(
-        load_result.metrics,
-        load_result.rf_neighbors,
+    params = analysis.AnalysisParams(
+        window_start=(
+            analysis.parse_time(args.window_from, "--from") if args.window_from else None
+        ),
+        window_end=analysis.parse_time(args.window_to, "--to") if args.window_to else None,
+        min_zero_samples=args.min_zero_samples,
+        min_zero_duration=(
+            analysis.parse_duration(args.min_zero_duration, "--min-zero-duration")
+            if args.min_zero_duration
+            else None
+        ),
+        event_window=analysis.parse_duration(args.event_window, "--event-window"),
+        exodus_threshold=args.exodus_threshold,
+        gap_factor=args.gap_factor,
         neighbor_count=args.neighbor_count,
         max_distance_m=args.max_distance_m,
+        neighbor_client_threshold=args.neighbor_client_threshold,
+        truncated_warn_ratio=args.truncated_warn_ratio,
     )
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        result_df = detector.detect(
-            load_result.metrics,
-            load_result.events,
-            load_result.gaps,
-            window_start=ws,
-            window_end=we,
-            min_zero_samples=args.min_zero_samples,
-            min_zero_duration=min_duration,
-            event_window=event_window,
-            exodus_threshold=args.exodus_threshold,
-            neighbor_context=neighbor_context,
-            neighbor_client_threshold=args.neighbor_client_threshold,
-        )
-    detector_warnings = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
-
-    truncated = detector.truncated_warning(result_df, args.truncated_warn_ratio)
-    quality_warnings = [truncated] if truncated else []
-
-    condition_text = _condition_text(args, ws, we, min_duration, event_window, len(files))
-    coverage_text = _coverage_and_warnings_text(report, detector_warnings, quality_warnings)
-    result_summary_text = _format_result_summary(result_df)
-    meta = _Meta(
-        title="ハングAP分析結果",
-        condition_text=condition_text,
-        coverage_and_warnings_text=coverage_text,
-        result_summary_text=result_summary_text,
-    )
+    res = analysis.run_analysis(files, params)
+    result_df = res.result
+    meta = res.meta()
 
     # 1. ローダのレポート
-    print(report.render())
+    print(res.report.render())
     print()
     # 2. 警告（検出時。データ範囲不足など）
-    print(f"[ 警告（検出時） ] {len(detector_warnings)} 件")
-    if not detector_warnings:
+    print(f"[ 警告（検出時） ] {len(res.detector_warnings)} 件")
+    if not res.detector_warnings:
         print("  （なし）")
-    for w in detector_warnings:
+    for w in res.detector_warnings:
         print(f"  ! {w}")
     print()
     # 3. 分析条件
-    print(condition_text)
+    print(meta.condition_text)
     print()
     # 4. 結果サマリー
     print("[ 結果サマリー ]")
-    print(result_summary_text)
+    print(meta.result_summary_text)
     print()
     # 5. データ品質の警告（件数だけを見ていると気づけないため独立した節にする）
-    if quality_warnings:
+    if res.quality_warnings:
         print("[ データ品質の警告 ]")
-        for w in quality_warnings:
+        for w in res.quality_warnings:
             print(f"  ⚠ 警告: {w}")
         print()
     # 6. 判定根拠（--explain）
     if args.explain:
-        print(neighbors.render_explain(result_df, args.explain, neighbor_context))
+        print(neighbors.render_explain(result_df, args.explain, res.neighbor_context))
         print()
 
     out_dir = Path(args.out)
@@ -562,18 +317,16 @@ def run_analyze(args: argparse.Namespace) -> int:
     written: list[Path] = []
     try:
         if args.format in ("xlsx", "both"):
-            xlsx_path = out_dir / f"hangap_result_{stamp}.xlsx"
-            _write_xlsx(xlsx_path, result_df, meta)
-            written.append(xlsx_path)
+            written.append(
+                analysis.write_xlsx(out_dir / f"hangap_result_{stamp}.xlsx", result_df, meta)
+            )
         if args.format in ("csv", "both"):
-            csv_path = out_dir / f"hangap_result_{stamp}.csv"
-            result_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-            written.append(csv_path)
+            written.append(analysis.write_csv(out_dir / f"hangap_result_{stamp}.csv", result_df))
             # xlsx には条件・警告を埋め込めるが、CSV 単体は表形式のみのため、
             # --format both でも CSV を受け取った人が読めるよう summary は常に添える。
-            summary_path = out_dir / f"hangap_result_{stamp}_summary.txt"
-            _write_summary(summary_path, meta)
-            written.append(summary_path)
+            written.append(
+                analysis.write_summary(out_dir / f"hangap_result_{stamp}_summary.txt", meta)
+            )
     except OSError as exc:
         raise OutputError(f"出力ファイルの書き込みに失敗しました: {exc}") from exc
 
@@ -590,7 +343,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
         return run(args)
-    except CliError as e:
+    # NoMetricsError（ap_metrics 0 行）もここに入る。「検出0件」は正常終了(0)だが、
+    # 「そもそも分析対象が無かった」は入力エラーとして 1 で終わること。
+    except (CliError, analysis.AnalysisError) as e:
         print(f"error: {e}", file=sys.stderr)
         return EXIT_INPUT_ERROR
     except OutputError as e:

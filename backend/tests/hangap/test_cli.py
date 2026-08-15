@@ -136,6 +136,34 @@ def test_zero_detections_exit_ok_with_empty_result_files(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 4b. ap_metrics が 1 行も無い（検出 0 件とは別の状態。終了コード 1）
+# ---------------------------------------------------------------------------
+
+
+def test_no_ap_metrics_exits_with_input_error(tmp_path, capsys):
+    """ap_events だけがある入力。「ハングが無かった」ではなく「分析対象が無かった」。"""
+    S.write_events(tmp_path / "ap_events.csv", [S.event_row(START)])
+    out = tmp_path / "out"
+
+    assert _run(["analyze", str(tmp_path), "--out", str(out)]) == cli.EXIT_INPUT_ERROR
+
+    stderr = capsys.readouterr().err
+    assert "ap_metrics" in stderr
+    assert not out.exists()  # 中身の無い結果ファイルを作らない
+
+
+def test_no_ap_metrics_is_distinguished_from_zero_detections(tmp_path):
+    """検出 0 件は正常終了(0)のまま。両者を同じ終了コードにしないこと。"""
+    metrics_dir = tmp_path / "metrics"
+    S.write_metrics(metrics_dir / "ap_metrics.csv", _series("test-ap-aaa", "AAA-AP", START, [1] * 10))
+    assert _run(["analyze", str(metrics_dir), "--out", str(tmp_path / "out_ok")]) == cli.EXIT_OK
+
+    empty_dir = tmp_path / "events_only"
+    S.write_events(empty_dir / "ap_events.csv", [S.event_row(START)])
+    assert _run(["analyze", str(empty_dir), "--out", str(tmp_path / "out_ng")]) == cli.EXIT_INPUT_ERROR
+
+
+# ---------------------------------------------------------------------------
 # 5. --out 必須
 # ---------------------------------------------------------------------------
 

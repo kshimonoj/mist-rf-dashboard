@@ -320,6 +320,38 @@ python -m hangap analyze /path/to/logs --out ./out \
     --truncated-warn-ratio 0.3 --explain AP04
 ```
 
+### "No data at all" is not "nothing detected"
+
+If the loader reads **zero `ap_metrics` rows**, the run is an error — `analyze` exits with code 1
+and the API job ends as `failed`. Detecting no hang while metrics *were* read stays a normal
+result (exit 0 / `done`, 0 rows). The two look identical in a count alone, and reading a missing
+log directory as "no hangs" is the easier mistake to make.
+
+### On-demand analysis over the API
+
+The same analysis runs on this dashboard's own `data/logs` via `/api/hangap`. It is started by
+request only — nothing is analysed on a schedule. Reading 5,000+ files takes far longer than a
+request, so it is an asynchronous job with progress polling, and **only one job runs at a time**
+(a second request gets 409 with the running `job_id`). Results are kept in-process, never in
+`mist.db`: at most 3 jobs, discarded an hour after they finish. Output files go to a `tempfile`
+directory, never under `data/` — writing them into `data/logs` would feed the next analysis its
+own output.
+
+```bash
+curl -s -X POST localhost:8008/api/hangap/analyze -H 'Content-Type: application/json' -d '{}'
+curl -s localhost:8008/api/hangap/jobs/<job_id>            # status / phase / summary / warnings
+curl -s 'localhost:8008/api/hangap/jobs/<job_id>/result?offset=0&limit=100&status=回復&sort=ゼロ開始&order=desc'
+curl -s 'localhost:8008/api/hangap/jobs/<job_id>/download?format=xlsx' -o result.xlsx
+curl -s -X DELETE localhost:8008/api/hangap/jobs/<job_id>
+```
+
+The request body accepts the same conditions as the CLI (`from`, `to`, `min_zero_samples`,
+`min_zero_duration`, `event_window_minutes`, `exodus_threshold`, `gap_factor`, `neighbor_count`,
+`max_distance_m`, `neighbor_client_threshold`, `truncated_warn_ratio`); every field is optional
+and the defaults are the CLI's own. Both paths call `hangap.analysis`, so the downloaded files
+are byte-for-byte what the CLI writes — including the xlsx condition, warning and recovered-row
+fills.
+
 ## Data Persistence
 
 All data is stored in the `./data/` directory:
