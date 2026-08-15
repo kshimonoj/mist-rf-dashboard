@@ -70,7 +70,39 @@ const PAGE_SIZE = 100;
 /** 画面を離れて戻ってきたときに実行中のジョブを拾うためのキー */
 const JOB_STORAGE_KEY = "hangap:job_id";
 
+/** 期間のプリセット（値を入れるだけで自動実行はしない） */
+const PRESETS = [
+  { label: "直近1時間", hours: 1 },
+  { label: "直近6時間", hours: 6 },
+  { label: "直近24時間", hours: 24 },
+] as const;
+
 const cardStyle = { borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" };
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * Date を datetime-local の値（``YYYY-MM-DDTHH:mm``）にする。
+ * **ローカルの日時要素をそのまま並べる。** ログの時刻は naive なので、
+ * UTC への変換（toISOString など）を挟むと窓がずれる。
+ */
+function toLocalInput(d: Date): string {
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+/** ローダが報告した metrics の実期間を「2026-08-15 20:06 〜 21:56」の形にする */
+function formatDataRange(period: (string | null)[] | null | undefined): string | null {
+  if (!period) return null;
+  const [rawFirst, rawLast] = period;
+  if (!rawFirst || !rawLast) return null;
+  const first = rawFirst.slice(0, 16); // 秒は落とす（サンプリング間隔より細かい桁は不要）
+  const last = rawLast.slice(0, 16);
+  const sameDay = first.slice(0, 10) === last.slice(0, 10);
+  return `${first} 〜 ${sameDay ? last.slice(11) : last}`;
+}
 
 function fmtCell(value: HangapCell): string {
   if (value === null || value === undefined) return "-";
@@ -262,6 +294,9 @@ export default function HangApPage() {
     setConflict(null);
     try {
       const body: HangapAnalyzeBody = {};
+      // datetime-local の値（"2026-08-15T20:00"）は API がそのまま受け付ける
+      // ISO8601（TZ なし）。**変換を挟まないこと。** ログの時刻は naive なので、
+      // UTC などへ直すと窓がずれる。
       if (from.trim()) body.from = from.trim();
       if (to.trim()) body.to = to.trim();
       for (const f of ADVANCED_FIELDS) {
@@ -290,6 +325,14 @@ export default function HangApPage() {
   };
 
   const summary = job?.status === "done" ? job.summary : null;
+
+  // 直近の分析で読み込めたデータの実期間。次に期間を指定するときの目安として、
+  // 新しい分析を回している間も直前の値を出したままにする
+  const [dataRange, setDataRange] = useState<string | null>(null);
+  useEffect(() => {
+    const range = formatDataRange(job?.summary?.loader.metrics_period);
+    if (range) setDataRange(range);
+  }, [job]);
 
   const { data: page, isLoading: resultLoading } = useSWR<HangapResultPage>(
     job?.status === "done"
@@ -370,9 +413,10 @@ export default function HangApPage() {
           <label className="text-xs" style={{ color: "var(--text-muted)" }}>
             期間（開始）
             <input
+              type="datetime-local"
+              step={60}
               value={from}
               onChange={(e) => setFrom(e.target.value)}
-              placeholder="2026-01-01 00:00（省略可）"
               className="block mt-1 px-2 py-1.5 rounded border text-sm w-56 font-mono"
               style={{ borderColor: "var(--chart-grid)", backgroundColor: "var(--bg-primary)", color: "var(--text-primary)" }}
             />
@@ -380,9 +424,10 @@ export default function HangApPage() {
           <label className="text-xs" style={{ color: "var(--text-muted)" }}>
             期間（終了）
             <input
+              type="datetime-local"
+              step={60}
               value={to}
               onChange={(e) => setTo(e.target.value)}
-              placeholder="2026-01-02 00:00（省略可）"
               className="block mt-1 px-2 py-1.5 rounded border text-sm w-56 font-mono"
               style={{ borderColor: "var(--chart-grid)", backgroundColor: "var(--bg-primary)", color: "var(--text-primary)" }}
             />
@@ -397,6 +442,38 @@ export default function HangApPage() {
             {running ? "実行中..." : "分析を実行"}
           </button>
         </div>
+
+        {/* プリセット。値を入れるだけで、分析は実行しない */}
+        <div className="flex flex-wrap items-center gap-2 mt-3">
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>プリセット:</span>
+          {PRESETS.map((p) => (
+            <button
+              key={p.label}
+              onClick={() => {
+                const now = new Date();
+                setTo(toLocalInput(now));
+                setFrom(toLocalInput(new Date(now.getTime() - p.hours * 3600_000)));
+              }}
+              className="px-3 py-1 rounded border text-xs transition-all"
+              style={{ borderColor: "var(--chart-grid)", color: "var(--text-secondary)" }}
+            >
+              {p.label}
+            </button>
+          ))}
+          <button
+            onClick={() => { setFrom(""); setTo(""); }}
+            className="px-3 py-1 rounded border text-xs transition-all"
+            style={{ borderColor: "var(--chart-grid)", color: "var(--text-secondary)" }}
+          >
+            クリア
+          </button>
+          {dataRange && (
+            <span className="ml-2 text-xs font-mono" style={{ color: "var(--text-muted)" }}>
+              データ範囲: {dataRange}
+            </span>
+          )}
+        </div>
+
         <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
           期間はログの時刻表記（タイムゾーンなし）で指定します。両方とも省略すると全データが対象です。
         </p>
