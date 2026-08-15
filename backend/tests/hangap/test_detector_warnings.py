@@ -80,10 +80,10 @@ def test_warns_when_data_does_not_reach_window_end(tmp_path):
 
 
 def test_warns_when_events_do_not_cover_window_end_plus_event_window(tmp_path):
-    """イベントが window_end + event_window までカバーしていなければ警告する。"""
+    """イベントが window_end + event_window + しきい値 を大幅に超えて遅れていれば警告する。"""
     rows = _rows(20)  # メトリクス自体は window_end を十分カバーする
     window_end = START + timedelta(seconds=INTERVAL * 15)
-    events = [S.event_row(START + timedelta(seconds=INTERVAL * 5))]  # window_end よりずっと手前
+    events = [S.event_row(START)]  # window_end よりずっと手前
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -157,12 +157,12 @@ def test_window_start_warning_is_unaffected_by_log_save_interval(tmp_path):
 
 
 def test_no_warning_when_event_deficit_is_below_log_save_interval(tmp_path):
-    """イベント側の不足がログ保存間隔未満なら警告しない。"""
+    """イベント側の不足が小さければ（しきい値を大幅に下回る）警告しない。"""
     rows = _rows(20)  # メトリクス自体は window_end を十分カバーする
     window_end = START + timedelta(seconds=INTERVAL * 15)
     event_window = timedelta(minutes=30)
     required = window_end + event_window
-    events = [S.event_row(required - timedelta(minutes=20))]  # 不足20分 < 60分
+    events = [S.event_row(required - timedelta(minutes=20))]  # 不足20分 < 90分
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -174,13 +174,39 @@ def test_no_warning_when_event_deficit_is_below_log_save_interval(tmp_path):
         )
 
 
-def test_warns_when_event_deficit_exceeds_log_save_interval(tmp_path):
-    """イベント側の不足がログ保存間隔以上なら、これまでどおり警告する。"""
+def test_no_warning_when_event_deficit_is_below_log_save_interval_plus_event_window(tmp_path):
+    """イベント側のしきい値は log_save_interval + event_window。
+
+    要求ライン自体が window_end + event_window のため、data_max 側と同じ
+    log_save_interval だけをしきい値にすると、収集が追いついていても event_window 分
+    だけ過検知してしまう。実データで観測した状態（window_end 08:32 / event_window 30分 /
+    イベント終端 07:49 → 不足1時間13分、だがメトリクス終端は07:56で収集は追いついている）
+    を模した合成データで、しきい値90分（60分+30分）未満なら警告しないことを確認する。
+    """
+    rows = _rows(20)  # メトリクス自体は window_end を十分カバーする
+    window_end = START + timedelta(seconds=INTERVAL * 15)
+    event_window = timedelta(minutes=30)
+    required = window_end + event_window
+    # 不足80分: log_save_interval(60分)は超えるが、log_save_interval + event_window(90分)未満
+    events = [S.event_row(required - timedelta(minutes=80))]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        run(
+            tmp_path, rows, events=events,
+            window_start=SAFE_START, window_end=window_end,
+            event_window=event_window,
+            log_save_interval=timedelta(minutes=60),
+        )
+
+
+def test_warns_when_event_deficit_exceeds_log_save_interval_plus_event_window(tmp_path):
+    """イベント側の不足が log_save_interval + event_window 以上なら、これまでどおり警告する。"""
     rows = _rows(20)
     window_end = START + timedelta(seconds=INTERVAL * 15)
     event_window = timedelta(minutes=30)
     required = window_end + event_window
-    events = [S.event_row(required - timedelta(minutes=90))]  # 不足90分 >= 60分
+    events = [S.event_row(required - timedelta(minutes=120))]  # 不足120分 >= 90分
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
