@@ -1,8 +1,8 @@
 """hangap CLI — ローダ・検出エンジン・トポロジ診断を呼び出すだけの薄い配線。
 
-``hangap.loader.load()`` / ``hangap.detector.detect()`` / ``hangap.topology.analyze()``
-のロジックはここでは再実装しない。周辺 AP 判定（積集合・上位 N 台の採用）は
-どのサブコマンドにも置かない。ネットワークアクセス・LLM 呼び出しは行わない。
+``hangap.loader.load()`` / ``hangap.detector.detect()`` / ``hangap.topology.analyze()`` /
+``hangap.neighbors.build_context()`` のロジックはここでは再実装しない。
+ネットワークアクセス・LLM 呼び出しは行わない。
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from . import detector, loader, topology
+from . import detector, loader, neighbors, topology
 
 EXIT_OK = 0
 EXIT_INPUT_ERROR = 1
@@ -87,6 +87,21 @@ def build_parser() -> _ArgumentParser:
     p.add_argument("--exodus-threshold", type=float,
                     default=detector.DEFAULT_EXODUS_THRESHOLD)
     p.add_argument("--gap-factor", type=float, default=loader.DEFAULT_GAP_FACTOR)
+    # 周辺AP判定（距離ベース）。既定値はいずれも暫定であり、実データを見ながら調整する前提。
+    p.add_argument("--neighbor-count", type=int, default=neighbors.DEFAULT_NEIGHBOR_COUNT,
+                    help=f"近傍として採用する最大台数（既定 {neighbors.DEFAULT_NEIGHBOR_COUNT}・暫定値）")
+    p.add_argument("--max-distance-m", type=float, default=neighbors.DEFAULT_MAX_DISTANCE_M,
+                    help=f"近傍として認める最大距離 m（既定 {neighbors.DEFAULT_MAX_DISTANCE_M:g}・暫定値）")
+    p.add_argument("--neighbor-client-threshold", type=float,
+                    default=neighbors.DEFAULT_NEIGHBOR_CLIENT_THRESHOLD,
+                    help="周辺AP端末数合計がこれ以上なら「周辺に端末あり」"
+                         f"（既定 {neighbors.DEFAULT_NEIGHBOR_CLIENT_THRESHOLD:g}・暫定値）")
+    p.add_argument("--truncated-warn-ratio", type=float,
+                    default=detector.DEFAULT_TRUNCATED_WARN_RATIO,
+                    help="打ち切り(欠測)の比率がこれを超えたら警告する"
+                         f"（既定 {detector.DEFAULT_TRUNCATED_WARN_RATIO:g}）")
+    p.add_argument("--explain", metavar="AP_NAME", action="append", default=[],
+                    help="指定した AP の各区間について判定根拠を表示する（複数指定可）")
     p.add_argument("--out", required=True, metavar="DIR", help="出力先ディレクトリ（必須）")
     p.add_argument("--format", choices=("xlsx", "csv", "both"), default="both")
 
@@ -243,16 +258,22 @@ def _condition_text(
     return (
         f"分析条件: 窓 {_fmt_window(ws, we)} / {zero_desc} / "
         f"event_window={_fmt_td(event_window)} / exodus_threshold={args.exodus_threshold} / "
-        f"gap_factor={args.gap_factor} / 入力ファイル数={n_files}"
+        f"gap_factor={args.gap_factor} / 入力ファイル数={n_files} / "
+        f"neighbor_count={args.neighbor_count} / max_distance_m={args.max_distance_m:g} / "
+        f"neighbor_client_threshold={args.neighbor_client_threshold:g}（周辺AP判定の既定値は暫定）"
     )
 
 
-def _coverage_and_warnings_text(report: loader.LoadReport, detector_warnings: list[str]) -> str:
+def _coverage_and_warnings_text(
+    report: loader.LoadReport,
+    detector_warnings: list[str],
+    quality_warnings: Sequence[str] = (),
+) -> str:
     lines = [
         f"データ範囲: metrics {_fmt_period(report.metrics_period)} / "
         f"events {_fmt_period(report.events_period)}"
     ]
-    all_warnings = list(report.warnings) + list(detector_warnings)
+    all_warnings = list(report.warnings) + list(detector_warnings) + list(quality_warnings)
     if all_warnings:
         lines.append(f"警告 {len(all_warnings)} 件:")
         lines.extend(f"  ⚠ {w}" for w in all_warnings)
@@ -270,6 +291,12 @@ def _format_result_summary(df: pd.DataFrame) -> str:
             lines.append(f"  {status}: {int(counts.get(status, 0))}")
         lines.append(f"退場疑い: {int(df['退場疑い'].sum())} 件")
         lines.append(f"イベントが該当した区間数: {int((df['AP Event（±30分）'] == 'あり').sum())} 件")
+        # 周辺AP判定は判断材料であって絞り込み条件ではない。内訳を出すだけで行は落とさない。
+        verdicts = df["周辺AP判定"].value_counts()
+        lines.append("周辺AP判定:")
+        for verdict in (neighbors.VERDICT_PRESENT, neighbors.VERDICT_ABSENT,
+                        neighbors.VERDICT_UNKNOWN):
+            lines.append(f"  {verdict}: {int(verdicts.get(verdict, 0))}")
     return "\n".join(lines)
 
 
@@ -459,6 +486,14 @@ def run_analyze(args: argparse.Namespace) -> int:
             f"（ap_metrics / ap_events のいずれにも一致しません）: {sample}{more}"
         )
 
+    # 近傍AP のインデックスは検出と explain で共有する（座標は AP の最新行から 1 度だけ取る）
+    neighbor_context = neighbors.build_context(
+        load_result.metrics,
+        load_result.rf_neighbors,
+        neighbor_count=args.neighbor_count,
+        max_distance_m=args.max_distance_m,
+    )
+
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         result_df = detector.detect(
@@ -471,11 +506,16 @@ def run_analyze(args: argparse.Namespace) -> int:
             min_zero_duration=min_duration,
             event_window=event_window,
             exodus_threshold=args.exodus_threshold,
+            neighbor_context=neighbor_context,
+            neighbor_client_threshold=args.neighbor_client_threshold,
         )
     detector_warnings = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
 
+    truncated = detector.truncated_warning(result_df, args.truncated_warn_ratio)
+    quality_warnings = [truncated] if truncated else []
+
     condition_text = _condition_text(args, ws, we, min_duration, event_window, len(files))
-    coverage_text = _coverage_and_warnings_text(report, detector_warnings)
+    coverage_text = _coverage_and_warnings_text(report, detector_warnings, quality_warnings)
     result_summary_text = _format_result_summary(result_df)
     meta = _Meta(
         title="ハングAP分析結果",
@@ -501,6 +541,16 @@ def run_analyze(args: argparse.Namespace) -> int:
     print("[ 結果サマリー ]")
     print(result_summary_text)
     print()
+    # 5. データ品質の警告（件数だけを見ていると気づけないため独立した節にする）
+    if quality_warnings:
+        print("[ データ品質の警告 ]")
+        for w in quality_warnings:
+            print(f"  ⚠ 警告: {w}")
+        print()
+    # 6. 判定根拠（--explain）
+    if args.explain:
+        print(neighbors.render_explain(result_df, args.explain, neighbor_context))
+        print()
 
     out_dir = Path(args.out)
     try:
@@ -527,7 +577,7 @@ def run_analyze(args: argparse.Namespace) -> int:
     except OSError as exc:
         raise OutputError(f"出力ファイルの書き込みに失敗しました: {exc}") from exc
 
-    # 5. 出力ファイルのパス
+    # 7. 出力ファイルのパス
     print("[ 出力ファイル ]")
     for p in written:
         print(f"  {p}")

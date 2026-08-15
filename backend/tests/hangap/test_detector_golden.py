@@ -32,7 +32,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from hangap.detector import STATUS_RECOVERED, detect
+from hangap.detector import CORE_RESULT_COLUMNS, NEIGHBOR_COLUMNS, STATUS_RECOVERED, detect
 from hangap.loader import load
 
 #: ゴールデンデータの既定パス（環境変数 HANGAP_GOLDEN_PATH で上書き可能）
@@ -193,6 +193,45 @@ def test_compat_event_correlation_matches_golden(loaded, compat_recovered):
         assert len(counts) == 1
 
     print(f"イベント一致（互換再現）: {int(actual_has.sum())} 行")
+
+
+def test_neighbor_columns_are_additive_and_do_not_break_the_golden_match(loaded):
+    """周辺AP判定は **加算的な機能** であることの確認。
+
+    座標（map_id / x_m / y_m）を渡さない状態では周辺AP列はすべて空になり、
+    既存 22 列の結果は期待値シートと完全一致したまま変わらない。
+    検証済みのコアを壊していないことの証明として、この確認は外さない。
+    """
+    res, expected = loaded
+    sliced = res.metrics[res.metrics["timestamp"] >= WINDOW_START].copy()
+    for col in ("map_id", "x_m", "y_m"):
+        if col in sliced.columns:
+            sliced[col] = pd.NA
+
+    actual = detect(sliced, res.events, res.gaps, window_start=WINDOW_START, window_end=None)
+    recovered = _sorted_by_key(actual[actual["回復状況"] == STATUS_RECOVERED])
+    expected_sorted = _sorted_by_key(expected)
+
+    assert len(recovered) == len(expected_sorted), (
+        f"区間数が一致しません: 期待 {len(expected_sorted)} / 実際 {len(recovered)}"
+    )
+    for col in EXACT_COLUMNS:
+        left, right = _normalize(recovered[col]), _normalize(expected_sorted[col])
+        bad = _mismatched_index(left, right)
+        assert not bad, f"列 {col} が不一致: {len(bad)} 件 / index={bad}"
+
+    # 列の名前と順序（既存 22 列が先頭、周辺AP列は末尾に追加）
+    assert tuple(actual.columns[: len(CORE_RESULT_COLUMNS)]) == CORE_RESULT_COLUMNS
+    assert tuple(actual.columns[len(CORE_RESULT_COLUMNS):]) == NEIGHBOR_COLUMNS
+
+    # 座標が無いので周辺AP列は空（判定不能）
+    for col in ("周辺AP数", "周辺AP端末数合計", "周辺AP RF隣接数"):
+        assert actual[col].isna().all(), f"座標なしなのに {col} に値が入っています"
+    for col in ("周辺AP名", "周辺AP距離", "周辺AP端末数"):
+        assert (actual[col].astype("string").fillna("") == "").all()
+    assert set(actual["周辺AP判定"]) == {"判定不能"}
+
+    print(f"PASS（ゴールデン非破壊）: {len(recovered)}/{len(expected_sorted)} 区間一致 / 周辺AP列は空")
 
 
 # ---------------------------------------------------------------------------

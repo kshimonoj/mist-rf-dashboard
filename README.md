@@ -214,12 +214,15 @@ docker compose up -d
 - `hangap.detector.detect()` finds zero-client intervals — an AP that stays `connected` while
   its client count sits at zero — and correlates AP events (±30 min by default) around the end
   of each interval.
+- `hangap.neighbors.build_context()` adds **nearby-AP columns**, so a zero interval can be told
+  apart from "nobody was there" (see below).
 
 ```python
 from hangap import detect, load
 
 res = load("/path/to/logs/2026-08-09")
 df = detect(res.metrics, res.events, res.gaps,
+            rf_neighbors=res.rf_neighbors,
             window_start="2026-08-09 16:00", window_end="2026-08-09 21:00")
 ```
 
@@ -257,6 +260,48 @@ unknown or mixed, use `min_zero_duration` (a time span) instead — it takes pre
 
 Ongoing intervals (`継続中`) and site-wide exodus candidates (`退場疑い=True`) are kept in the
 result on purpose; filtering is left to the caller.
+
+### Nearby APs are decided by distance, not by RF adjacency
+
+Without this, a zero-client interval cannot be told apart from "there simply was nobody there".
+A nearby AP of X is: **same `map_id`**, the closest `neighbor_count` APs by Euclidean distance
+over `x_m` / `y_m`, and within `max_distance_m`. APs on another map are never neighbours (the
+coordinate systems differ, so no distance exists). If no AP falls inside the limit — or the AP
+has no coordinates at all (e.g. logs in the older 33-column `ap_metrics_v1` format) — the
+verdict is `判定不能` (undecidable), which is **not** the same as zero neighbours.
+
+This is measured, not assumed. On a real 250-AP / 7-map site: 49.8 % of RF neighbours were on a
+different map, RSSI top-N and distance top-N agreed only 46.2 % of the time (N=4), RSSI top-N
+averaged 18.9 m away versus 11.9 m for distance top-N, and only 28.7 % of RF adjacencies were
+observed in both directions. The question being answered is "were there people *at that spot*",
+and physical proximity answers it better. `周辺AP RF隣接数` is a **reference column only** — how
+many of the distance-picked neighbours also appear in `rf_neighbors`. It never affects the
+verdict, and it is left blank (never an error) when `rf_neighbors` was not loaded.
+
+Seven columns are appended to the result; the existing 22 columns keep their names and order.
+`周辺AP端末数` is each neighbour's **mean `num_clients` during the interval** (zero-start to
+zero-end, inclusive), and `周辺AP判定` is `周辺に端末あり` when `周辺AP端末数合計 >=
+neighbor_client_threshold`. Like `継続中` and `退場疑い`, this verdict never filters rows — it is
+material for the reader to judge with.
+
+> **The defaults are provisional.** `neighbor_count=4`, `max_distance_m=25`, and
+> `neighbor_client_threshold=1.0` are starting points to be tuned against real site data, not
+> settled values. Use `--explain <AP_NAME>` (repeatable) to print the reasoning per interval and
+> check whether the thresholds hold up on your data.
+
+### Data-quality warning on truncated intervals
+
+If more than `--truncated-warn-ratio` (default 0.3) of the detected intervals ended as
+`打ち切り(欠測)`, `analyze` prints a warning that includes the ratio, and records it in the
+output files too (the xlsx warning row and the CSV `_summary.txt`) so that whoever receives only
+the results cannot misread them. A high ratio means log collection was intermittent and the
+result does not support analysis — a count alone would not reveal that.
+
+```bash
+python -m hangap analyze /path/to/logs --out ./out \
+    --neighbor-count 4 --max-distance-m 25 --neighbor-client-threshold 1.0 \
+    --truncated-warn-ratio 0.3 --explain AP04
+```
 
 ## Data Persistence
 

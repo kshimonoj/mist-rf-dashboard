@@ -13,8 +13,9 @@
   区間の終了・回復判定・直後clients・イベント相関・ゼロ直前時刻には、窓の外を含む
   読み込み済みの全サンプルを使う（サンプル自体を窓で切り落とさない）。
 - 判定材料（サイト全体の増減など）は列として足すだけで、**行は落とさない**。
-  絞り込みは利用者側の責務とする。
-- 周辺 AP の判定（距離・RF 隣接・近傍集合）はここには置かない。
+  絞り込みは利用者側の責務とする。``周辺AP判定`` も同じで、行のフィルタには使わない。
+- 周辺 AP の判定ロジック（距離・近傍集合）そのものは :mod:`hangap.neighbors` に置き、
+  ここでは区間ごとに列を足すだけにする。
 
 .. warning::
    ``min_zero_samples`` は **サンプル数** であって時間ではない。サンプリング間隔は環境で
@@ -30,6 +31,15 @@ from datetime import datetime, timedelta
 from typing import Iterable, Sequence
 
 import pandas as pd
+
+from . import neighbors as _neighbors
+from .neighbors import (  # 再エクスポート（呼び出し側が neighbors を import せずに済むように）
+    DEFAULT_MAX_DISTANCE_M,
+    DEFAULT_NEIGHBOR_CLIENT_THRESHOLD,
+    DEFAULT_NEIGHBOR_COUNT,
+    NEIGHBOR_COLUMNS,
+    NeighborContext,
+)
 
 # ---------------------------------------------------------------------------
 # 既定値
@@ -53,9 +63,13 @@ STATUS_ONGOING = "継続中"
 STATUS_CUT_GAP = "打ち切り(欠測)"
 STATUS_CUT_AP_DOWN = "打ち切り(AP停止)"
 
-#: 出力列（先頭 18 列は手作業の分析結果と同一の名前・順序。19 列目以降が自動化での追加分）
+#: 打ち切り(欠測)がこの割合を超えたら「結果が分析に耐えない」と警告する
+DEFAULT_TRUNCATED_WARN_RATIO: float = 0.3
+
+#: 出力列の先頭 22 列。**名前も順序も変えないこと**（手作業の分析結果との照合に使う）。
+#: 先頭 18 列は手作業の分析結果と同一。19 列目以降が自動化での追加分。
 #: 「AP Event（±30分）」は手作業の分析と同じ列名を保つため、``event_window`` を変えても固定。
-RESULT_COLUMNS: tuple[str, ...] = (
+CORE_RESULT_COLUMNS: tuple[str, ...] = (
     "ap_name",
     "site_name",
     "区間番号",
@@ -79,6 +93,9 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "サイト全体変化率",
     "退場疑い",
 )
+
+#: 出力列（先頭 22 列 + 周辺AP判定の 7 列）。追加は必ず末尾に行う。
+RESULT_COLUMNS: tuple[str, ...] = (*CORE_RESULT_COLUMNS, *NEIGHBOR_COLUMNS)
 
 #: イベント列の区切り（4 列すべて同じ順序・同じ件数で並ぶ）
 EVENT_SEPARATOR: str = " | "
@@ -391,6 +408,11 @@ def detect(
     min_zero_duration: timedelta | float | str | None = None,
     event_window: timedelta | float | str = DEFAULT_EVENT_WINDOW,
     exodus_threshold: float = DEFAULT_EXODUS_THRESHOLD,
+    rf_neighbors: pd.DataFrame | None = None,
+    neighbor_context: NeighborContext | None = None,
+    neighbor_count: int = DEFAULT_NEIGHBOR_COUNT,
+    max_distance_m: float = DEFAULT_MAX_DISTANCE_M,
+    neighbor_client_threshold: float = DEFAULT_NEIGHBOR_CLIENT_THRESHOLD,
 ) -> pd.DataFrame:
     """ゼロクライアント区間を検出して DataFrame（列は :data:`RESULT_COLUMNS`）で返す。
 
@@ -412,8 +434,16 @@ def detect(
         指定された場合は ``min_zero_samples`` より優先する。
     :param event_window: イベント相関の窓（ゼロ終了 ± この時間）。既定 30 分。
     :param exodus_threshold: 退場疑いのしきい値。サイト全体変化率がこれ以下なら True。
+    :param rf_neighbors: ローダの ``rf_neighbors``。``周辺AP RF隣接数``（参考列）の算出に
+        しか使わない。**周辺AP判定には一切影響しない。** 省略すればその列が空になるだけ。
+    :param neighbor_context: :func:`hangap.neighbors.build_context` の戻り値。省略時は
+        ``metrics`` から自動で作る（CLI は explain と共有するため自分で作って渡す）。
+    :param neighbor_count: 近傍として採用する最大台数（距離が近い順）。
+    :param max_distance_m: 近傍として認める最大距離（m）。
+    :param neighbor_client_threshold: ``周辺AP端末数合計`` がこれ以上なら「周辺に端末あり」。
 
     結果からは「継続中」も「退場疑い」も除外しない（進行中のハングを取りこぼさないため）。
+    ``周辺AP判定`` も同様で、「周辺も端末なし」の区間を落としたりはしない（絞り込みは利用者側）。
 
     ``window_start`` / ``window_end`` に対して読み込み済みデータが不足している場合
     （History Log の結合漏れ等）は ``UserWarning`` を出す（エラーにはしない）。
@@ -428,6 +458,13 @@ def detect(
     totals = _site_totals(prepared)
     events_by_ap = _events_by_ap(events)
     min_duration = _as_timedelta(min_zero_duration) if min_zero_duration is not None else None
+    # 座標は元の metrics（map_id / x_m / y_m を含む）から取る。prepared は必須列だけに絞られている。
+    ctx = neighbor_context or _neighbors.build_context(
+        metrics,
+        rf_neighbors,
+        neighbor_count=neighbor_count,
+        max_distance_m=max_distance_m,
+    )
 
     rows: list[dict] = []
     for ap_id, grp in prepared.groupby("ap_id", sort=False):
@@ -504,6 +541,9 @@ def detect(
             }
             row.update(_event_columns(ap_events, zero_end, ev_window))
             row.update(_site_columns(total, zero_start, zero_end, exodus_threshold))
+            row.update(
+                ctx.columns_for(str(ap_id), zero_start, zero_end, neighbor_client_threshold)
+            )
             rows.append(row)
 
     return _to_frame(rows)
@@ -570,6 +610,30 @@ def _site_columns(
     }
 
 
+def truncated_warning(
+    result: pd.DataFrame,
+    warn_ratio: float = DEFAULT_TRUNCATED_WARN_RATIO,
+) -> str | None:
+    """打ち切り(欠測)の比率が高すぎる場合の警告文（該当しなければ None）。
+
+    デモ環境では検出 2341 区間のうち 1861 件（79%）が ``打ち切り(欠測)`` だった。
+    ログの収集が断続的だったことを意味し、その結果は分析に耐えない。件数だけを見ていると
+    気づけないため、割合を含む警告として明示する。
+    """
+    if result is None or len(result) == 0 or "回復状況" not in result.columns:
+        return None
+    total = len(result)
+    truncated = int((result["回復状況"] == STATUS_CUT_GAP).sum())
+    ratio = truncated / total
+    if ratio <= float(warn_ratio):
+        return None
+    return (
+        f"検出区間の {ratio * 100:.1f}%（{truncated}/{total} 件）が"
+        "データ欠測により打ち切られています。ログの収集が断続的だった可能性があります。"
+        "結果の解釈に注意してください。"
+    )
+
+
 def _to_frame(rows: Iterable[dict]) -> pd.DataFrame:
     """列順・dtype を揃えた DataFrame にする。"""
     df = pd.DataFrame(list(rows), columns=list(RESULT_COLUMNS))
@@ -579,12 +643,15 @@ def _to_frame(rows: Iterable[dict]) -> pd.DataFrame:
         "区間番号", "AP内区間数", "直前clients", "直後clients（回復時）",
         "連続ゼロ回数", "AP最大clients",
         "サイト合計clients(ゼロ開始時)", "サイト合計clients(ゼロ終了時)",
+        "周辺AP数", "周辺AP RF隣接数",
     ):
         df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
-    df["サイト全体変化率"] = pd.to_numeric(df["サイト全体変化率"], errors="coerce")
+    for col in ("サイト全体変化率", "周辺AP端末数合計"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     df["退場疑い"] = df["退場疑い"].fillna(False).astype(bool)
     for col in ("ap_name", "site_name", "回復状況", "AP Event（±30分）",
-                "Event時刻", "ゼロ終了との差(分)", "Event種別", "Event詳細"):
+                "Event時刻", "ゼロ終了との差(分)", "Event種別", "Event詳細",
+                "周辺AP名", "周辺AP距離", "周辺AP端末数", "周辺AP判定"):
         df[col] = df[col].astype("string").fillna("")
     if df.empty:
         return df
