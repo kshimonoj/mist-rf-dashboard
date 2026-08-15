@@ -26,6 +26,7 @@ from pseudonymizer.schemas import (
     AP_EVENTS_COLUMNS,
     AP_METRICS_COLUMNS,
     FILE_TYPES_BY_KEY,
+    RF_NEIGHBORS_COLUMNS,
     detect_file_type,
 )
 
@@ -34,10 +35,20 @@ from pseudonymizer.schemas import (
 # ---------------------------------------------------------------------------
 
 #: 既定で DataFrame まで読み込む種別（他の種別は件数のみ数える）
-DEFAULT_FILE_TYPES: tuple[str, ...] = ("ap_metrics", "ap_metrics_v1", "ap_events")
+DEFAULT_FILE_TYPES: tuple[str, ...] = (
+    "ap_metrics", "ap_metrics_v1", "ap_events", "rf_neighbors",
+)
 
 #: ap_metrics として結合する種別（座標列追加前後のバージョン違い）
 METRICS_FILE_TYPES: frozenset[str] = frozenset({"ap_metrics", "ap_metrics_v1"})
+
+#: RRM 隣接の種別（rf_neighbors は日次取得のため 1 種別のみ）
+RF_NEIGHBORS_FILE_TYPE: str = "rf_neighbors"
+
+#: rf_neighbors の重複判定キー（方向を潰さないため neighbor_mac までを含める）
+RF_NEIGHBORS_KEY: tuple[str, ...] = (
+    "site_id", "band", "ap_mac", "neighbor_mac", "timestamp",
+)
 
 #: ギャップ判定のしきい値係数（推定間隔 × この値を超えたら欠測とみなす）
 DEFAULT_GAP_FACTOR: float = 1.5
@@ -54,11 +65,16 @@ TZ_TOKENS: frozenset[str] = frozenset(
 )
 
 #: MAC として正規化する列（コロン無し小文字。プロジェクト規約に合わせる）
-MAC_COLUMNS: frozenset[str] = frozenset({"mac", "ap_mac", "bssid"})
+MAC_COLUMNS: frozenset[str] = frozenset({"mac", "ap_mac", "bssid", "neighbor_mac"})
 
 #: ap_metrics で必ず文字列として読む列（先頭ゼロ落ち・数値化を防ぐ）
 _METRICS_STR_COLUMNS: tuple[str, ...] = (
     "site_id", "site_name", "ap_id", "ap_name", "model", "mac", "status", "map_id",
+)
+
+#: rf_neighbors で必ず文字列として読む列（band の "5" が 5.0 になるのを防ぐ）
+_RF_NEIGHBORS_STR_COLUMNS: tuple[str, ...] = (
+    "site_id", "site_name", "band", "ap_mac", "ap_name", "neighbor_mac", "neighbor_name",
 )
 
 #: ap_events は全列一致で重複判定するため、いったん全列を文字列で読む。
@@ -149,6 +165,12 @@ class LoadReport:
     ap_count: int = 0
     metrics_rows: int = 0
     events_rows: int = 0
+    #: rf_neighbors の全行数（複数日分を読み込んだ場合はその合計）
+    rf_neighbors_rows: int = 0
+    #: (取得時刻, 行数) の一覧。日次取得なので通常は 1 日 1 件
+    rf_neighbors_snapshots: list[tuple[datetime, int]] = field(default_factory=list)
+    #: 分析に使う取得時刻（最新のスナップショット）
+    rf_neighbors_latest: datetime | None = None
     tz_tokens: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
@@ -259,6 +281,16 @@ class LoadReport:
         if len(self.event_blind_spots) > 10:
             add(f"  ... 他 {len(self.event_blind_spots) - 10} 件")
 
+        add("")
+        add("[ RF 隣接（rf_neighbors） ]")
+        if self.rf_neighbors_rows == 0:
+            add("  読み込みなし（既存ログには存在しないため、これが通常状態）")
+        else:
+            add(f"  全行数: {self.rf_neighbors_rows}  取得時刻: {len(self.rf_neighbors_snapshots)} 時点")
+            for ts, n in self.rf_neighbors_snapshots:
+                mark = " ← 分析に使用" if ts == self.rf_neighbors_latest else ""
+                add(f"    {_fmt_dt(ts)}  rows={n}{mark}")
+
         if self.tz_tokens:
             add("")
             add("[ ファイル名の TZ トークン ]（変換には使っていない）")
@@ -275,6 +307,12 @@ class LoadReport:
         return "\n".join(lines)
 
 
+def _empty_rf_neighbors() -> pd.DataFrame:
+    empty = pd.DataFrame(columns=list(RF_NEIGHBORS_COLUMNS))
+    empty["timestamp"] = pd.to_datetime(empty["timestamp"])
+    return empty
+
+
 @dataclass
 class LoadResult:
     """load() の戻り値。"""
@@ -283,6 +321,8 @@ class LoadResult:
     events: pd.DataFrame
     gaps: pd.DataFrame
     report: LoadReport
+    #: RRM 隣接。読み込んだ**全時点**を保持する（分析側で最新時点だけを使う）
+    rf_neighbors: pd.DataFrame = field(default_factory=_empty_rf_neighbors)
 
 
 # ---------------------------------------------------------------------------
@@ -411,13 +451,26 @@ def _parse_timestamps(s: pd.Series) -> pd.Series:
     return out
 
 
-def _read_table(path: Path, sheet: str | None, columns: Sequence[str], as_str: bool) -> pd.DataFrame:
+def _str_columns_for(file_type_key: str) -> tuple[str, ...]:
+    """種別ごとに「必ず文字列として読む列」を返す。"""
+    if file_type_key == RF_NEIGHBORS_FILE_TYPE:
+        return _RF_NEIGHBORS_STR_COLUMNS
+    return _METRICS_STR_COLUMNS
+
+
+def _read_table(
+    path: Path,
+    sheet: str | None,
+    columns: Sequence[str],
+    as_str: bool,
+    str_columns: Sequence[str] = _METRICS_STR_COLUMNS,
+) -> pd.DataFrame:
     """1 ファイル（または 1 シート）を DataFrame として読む。"""
     dtype: object
     if as_str:
         dtype = "string"
     else:
-        dtype = {c: "string" for c in _METRICS_STR_COLUMNS if c in columns}
+        dtype = {c: "string" for c in str_columns if c in columns}
     if sheet is None:
         df = pd.read_csv(
             path,
@@ -604,6 +657,15 @@ def load(
 
     metrics_parts: list[pd.DataFrame] = []
     events_parts: list[pd.DataFrame] = []
+    rf_parts: list[pd.DataFrame] = []
+
+    def collect(key: str, df: pd.DataFrame) -> None:
+        if key in METRICS_FILE_TYPES:
+            metrics_parts.append(df)
+        elif key == RF_NEIGHBORS_FILE_TYPE:
+            rf_parts.append(df)
+        else:
+            events_parts.append(df)
 
     def stat(key: str) -> FileTypeStat:
         st = report.file_stats.get(key)
@@ -628,12 +690,16 @@ def load(
             st.files += 1
             if ft.key in wanted:
                 try:
-                    df = _read_table(path, None, ft.columns, as_str=(ft.key == "ap_events"))
+                    df = _read_table(
+                        path, None, ft.columns,
+                        as_str=(ft.key == "ap_events"),
+                        str_columns=_str_columns_for(ft.key),
+                    )
                 except (ValueError, OSError, pd.errors.ParserError) as exc:
                     report.warnings.append(f"読み込みに失敗したファイル: {path.name} ({type(exc).__name__})")
                     continue
                 st.rows += len(df)
-                (metrics_parts if ft.key in METRICS_FILE_TYPES else events_parts).append(df)
+                collect(ft.key, df)
             else:
                 st.rows += _count_csv_rows(path)
 
@@ -653,14 +719,18 @@ def load(
                 st.files += 1
                 if ft.key in wanted:
                     try:
-                        df = _read_table(path, sheet_name, ft.columns, as_str=(ft.key == "ap_events"))
+                        df = _read_table(
+                            path, sheet_name, ft.columns,
+                            as_str=(ft.key == "ap_events"),
+                            str_columns=_str_columns_for(ft.key),
+                        )
                     except (ValueError, OSError) as exc:
                         report.warnings.append(
                             f"読み込みに失敗したシート: {path.name}#{sheet_name} ({type(exc).__name__})"
                         )
                         continue
                     st.rows += len(df)
-                    (metrics_parts if ft.key in METRICS_FILE_TYPES else events_parts).append(df)
+                    collect(ft.key, df)
                 else:
                     st.rows += nrows
         else:
@@ -675,6 +745,7 @@ def load(
 
     metrics = _finalize_metrics(metrics_parts, report)
     events = _finalize_events(events_parts, report)
+    rf_neighbors = _finalize_rf_neighbors(rf_parts, report)
 
     # --- 推定・検出 ---
     intervals, overall = _estimate_intervals(metrics)
@@ -723,7 +794,10 @@ def load(
     if report.events_rows == 0:
         report.warnings.append("ap_events が 1 件もありません（この期間のイベントログはありません）")
 
-    return LoadResult(metrics=metrics, events=events, gaps=gaps, report=report)
+    return LoadResult(
+        metrics=metrics, events=events, gaps=gaps, report=report,
+        rf_neighbors=rf_neighbors,
+    )
 
 
 def _excel_sheet_headers(path: Path) -> list[tuple[str, list[str], int]]:
@@ -809,6 +883,56 @@ def _finalize_events(parts: list[pd.DataFrame], report: LoadReport) -> pd.DataFr
 
     df = df.sort_values(["event_timestamp", "ap_name", "event_type"], kind="stable")
     return df.reset_index(drop=True)
+
+
+def _finalize_rf_neighbors(parts: list[pd.DataFrame], report: LoadReport) -> pd.DataFrame:
+    """rf_neighbors を結合・正規化する。
+
+    重複判定は ``(site_id, band, ap_mac, neighbor_mac, timestamp)``。
+    対称化（max / mean / min）は行わない。方向ごとの行をそのまま保持する。
+    日次取得のため複数日分が混ざりうるので、**全時点を保持したまま**
+    最新の取得時刻をレポートに記録する（どの時点を使ったかを追えるようにするため）。
+    """
+    columns = list(RF_NEIGHBORS_COLUMNS)
+    if not parts:
+        return _empty_rf_neighbors()
+
+    df = pd.concat(parts, ignore_index=True).reindex(columns=columns)
+    df["timestamp"] = _parse_timestamps(df["timestamp"])
+    bad = int(df["timestamp"].isna().sum())
+    if bad:
+        report.warnings.append(
+            f"timestamp を解釈できなかった rf_neighbors の行 {bad} 件を除外しました"
+        )
+        df = df[df["timestamp"].notna()]
+    for col in MAC_COLUMNS & set(df.columns):
+        df[col] = _normalize_mac(df[col])
+    for col in ("site_id", "site_name", "band", "ap_name", "neighbor_name"):
+        df[col] = df[col].astype("string").fillna("")
+    df["rssi"] = pd.to_numeric(df["rssi"], errors="coerce")
+
+    before = len(df)
+    df = df.sort_values(list(RF_NEIGHBORS_KEY), kind="stable")
+    df = df[~df.duplicated(subset=list(RF_NEIGHBORS_KEY), keep="first")]
+    removed = before - len(df)
+    if RF_NEIGHBORS_FILE_TYPE in report.file_stats:
+        report.file_stats[RF_NEIGHBORS_FILE_TYPE].duplicates_removed = removed
+
+    df = df.reset_index(drop=True)
+    report.rf_neighbors_rows = int(len(df))
+    if not df.empty:
+        counts = df.groupby("timestamp").size().sort_index()
+        report.rf_neighbors_snapshots = [(ts, int(n)) for ts, n in counts.items()]
+        report.rf_neighbors_latest = counts.index.max()
+    return df
+
+
+def latest_rf_neighbors(rf_neighbors: pd.DataFrame) -> pd.DataFrame:
+    """最新の取得時刻の行だけを返す（日次取得なので通常は 1 日分）。"""
+    if rf_neighbors.empty:
+        return rf_neighbors
+    latest = rf_neighbors["timestamp"].max()
+    return rf_neighbors[rf_neighbors["timestamp"] == latest].reset_index(drop=True)
 
 
 def _summarize_gaps(gaps: pd.DataFrame) -> GapSummary:

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .salt import SaltMaterial, _write_private_json
-from .schemas import AP_IDENTITY_TYPES, FileType, TransformType as T, ap_link_columns
+from .schemas import AP_IDENTITY_TYPES, FileType, TransformType as T, ap_link_column_groups
 
 MAP_VERSION = 1
 
@@ -276,8 +276,10 @@ class Pseudonymizer:
 
     def observe_row(self, ft: FileType, row: dict[str, str]) -> None:
         """1 行から採番対象の値を収集する。"""
-        link_cols = ap_link_columns(ft)
-        link_keys: list[tuple[T, str]] = []
+        link_groups = ap_link_column_groups(ft)
+        # 列名 → その列が属するグループ番号（1 行に複数台の AP が並ぶ種別を正しく分ける）
+        group_of = {col: i for i, cols in enumerate(link_groups) for col in cols}
+        link_keys: dict[int, list[tuple[T, str]]] = defaultdict(list)
         for column, raw in row.items():
             rule = ft.rule_for(column)
             if rule is None:
@@ -291,10 +293,11 @@ class Pseudonymizer:
             if rule is T.VLAN and self._keep_vlan:
                 continue
             key = self._observe_value(rule, raw)
-            if key is not None and column in link_cols:
-                link_keys.append(key)
-        if len(link_keys) >= 2:
-            self._links.append(link_keys)
+            if key is not None and column in group_of:
+                link_keys[group_of[column]].append(key)
+        for keys in link_keys.values():
+            if len(keys) >= 2:
+                self._links.append(keys)
 
     def _observe_value(self, ttype: T, raw: str) -> tuple[T, str] | None:
         value = normalize_value(ttype, raw or "")

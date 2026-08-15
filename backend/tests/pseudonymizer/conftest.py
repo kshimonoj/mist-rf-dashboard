@@ -12,6 +12,7 @@ ALL_FIXTURES = (
     "client_metrics_20240101_0900_TZT.csv",
     "sle_metrics_20240101_0900_TZT.csv",
     "floormap_20240101_0900_TZT_summary.csv",
+    "rf_neighbors_20240101_0900_TZT.csv",
 )
 
 

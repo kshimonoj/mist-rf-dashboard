@@ -14,7 +14,10 @@ from database import Base, SessionLocal, engine, migrate_db
 from models import AppSettings, Credentials
 from routers import aps, clients, credentials, floor_map, insights, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots, tags
 import scheduler as sched_module
-from scheduler import poll_all_sites, poll_clients, prune_old_metrics, save_hourly_logs, scheduler
+from scheduler import (
+    poll_all_sites, poll_clients, prune_old_metrics,
+    save_hourly_logs, save_rf_neighbors_daily, scheduler,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -121,6 +124,9 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(poll_clients, "interval", seconds=client_interval, id="poll_clients")
     scheduler.add_job(save_hourly_logs, "cron", minute=0, id="hourly_csv_log", misfire_grace_time=600)
     scheduler.add_job(prune_old_metrics, "cron", hour=3, minute=0, id="prune_metrics", misfire_grace_time=3600)
+    # RRM 隣接はクラウド側が毎晩 1 回更新するだけなので日次取得で足りる
+    scheduler.add_job(save_rf_neighbors_daily, "cron", hour=4, minute=30,
+                      id="rf_neighbors_daily", misfire_grace_time=3600)
     scheduler.start()
     yield
     scheduler.shutdown()

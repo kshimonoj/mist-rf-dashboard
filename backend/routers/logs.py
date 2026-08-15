@@ -34,6 +34,8 @@ _SAFE_FILENAME = re.compile(
     r"|^ap_events_\d{8}_\d{6}(_[A-Z]{2,6})?\.csv$"
     r"|^ap_events_backfill_\d{8}_\d{4}(_[A-Z]{2,6})?\.csv$"
     r"|^ap_events_backfill_\d{8}_\d{6}(_[A-Z]{2,6})?\.csv$"
+    r"|^rf_neighbors_\d{8}_\d{4}(_[A-Z]{2,6})?\.csv$"
+    r"|^rf_neighbors_\d{8}_\d{6}(_[A-Z]{2,6})?_manual\.csv$"
 )
 
 

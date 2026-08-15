@@ -10,7 +10,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from pseudonymizer.schemas import AP_EVENTS_COLUMNS, AP_METRICS_COLUMNS
+from pseudonymizer.schemas import (
+    AP_EVENTS_COLUMNS,
+    AP_METRICS_COLUMNS,
+    RF_NEIGHBORS_COLUMNS,
+)
 
 SITE_ID = "test-site-id-0001"
 SITE_NAME = "TestSite"
@@ -85,6 +89,36 @@ def event_row(
     )
     row.update(extra)
     return row
+
+
+def rf_neighbor_row(
+    ts: datetime,
+    ap_mac: str,
+    neighbor_mac: str,
+    rssi: float,
+    *,
+    band: str = "5",
+    ap_name: str = "",
+    neighbor_name: str = "",
+    site_id: str = SITE_ID,
+    site_name: str = SITE_NAME,
+) -> dict[str, object]:
+    """RRM 隣接の 1 方向分。対称化しないので A→B と B→A は別の行として作る。"""
+    return {
+        "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S"),
+        "site_id": site_id,
+        "site_name": site_name,
+        "band": band,
+        "ap_mac": ap_mac,
+        "ap_name": ap_name,
+        "neighbor_mac": neighbor_mac,
+        "neighbor_name": neighbor_name,
+        "rssi": rssi,
+    }
+
+
+def write_rf_neighbors(path: Path, rows: Iterable[dict[str, object]]) -> Path:
+    return write_csv(path, RF_NEIGHBORS_COLUMNS, rows)
 
 
 def write_csv(path: Path, columns: Sequence[str], rows: Iterable[dict[str, object]]) -> Path:

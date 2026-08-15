@@ -49,6 +49,10 @@ COLUMN_RULES: dict[str, TransformType] = {
     "ap_id": T.AP_ID,
     "ap_name": T.AP_NAME,
     "ap_mac": T.AP_MAC,
+    # rf_neighbors の被観測側。ap_mac / ap_name と**同じ名前空間**で採番する
+    # （別名前空間にすると隣接グラフが壊れて分析不能になる）
+    "neighbor_mac": T.AP_MAC,
+    "neighbor_name": T.AP_NAME,
     "bssid": T.AP_MAC,
     "hostname": T.HOSTNAME,
     "ip": T.IP,
@@ -157,11 +161,16 @@ class FileType:
 
     判定はヘッダーの列集合（``columns`` の frozenset）の完全一致で行う。
     ファイル名は判定に使わない。
+
+    ``ap_link_groups`` は「同一行の中で**同じ AP** を指す列」の組を明示する。
+    既定（空）は「AP 識別列すべてが同じ AP を指す」とみなす。rf_neighbors のように
+    1 行に 2 台の AP が並ぶ種別では、組を分けて指定しないと別の AP が同一視されてしまう。
     """
 
     key: str
     columns: tuple[str, ...]
     overrides: dict[str, TransformType] = field(default_factory=dict)
+    ap_link_groups: tuple[tuple[str, ...], ...] = ()
 
     def rule_for(self, column: str) -> TransformType | None:
         """列名に対する変換型を返す。ホワイトリスト外なら None。"""
@@ -208,6 +217,12 @@ SLE_METRICS_COLUMNS: tuple[str, ...] = (
 FLOORMAP_SUMMARY_COLUMNS: tuple[str, ...] = (
     "timestamp", "site_name", "map_name", "band", "channel",
     "ap_count", "ap_list", "has_interference",
+)
+
+#: RRM 隣接（RF 的な隣接）。非対称性を保つため方向ごとに 1 行
+RF_NEIGHBORS_COLUMNS: tuple[str, ...] = (
+    "timestamp", "site_id", "site_name", "band",
+    "ap_mac", "ap_name", "neighbor_mac", "neighbor_name", "rssi",
 )
 
 # floormap の生 AP データ（フロア図上の AP ごとのスナップショット）
@@ -257,6 +272,12 @@ FILE_TYPES: tuple[FileType, ...] = (
         columns=FLOORMAP_AP_DETAIL_COLUMNS,
         overrides={"mac": T.AP_MAC},
     ),
+    FileType(
+        key="rf_neighbors",
+        columns=RF_NEIGHBORS_COLUMNS,
+        # 1 行に観測側と被観測側の 2 台が並ぶ。組を分けないと別の AP が同一視される
+        ap_link_groups=(("ap_mac", "ap_name"), ("neighbor_mac", "neighbor_name")),
+    ),
 )
 
 FILE_TYPES_BY_KEY: dict[str, FileType] = {ft.key: ft for ft in FILE_TYPES}
@@ -270,6 +291,7 @@ EXPECTED_COLUMN_COUNTS: dict[str, int] = {
     "sle_metrics": 28,
     "floormap_summary": 8,
     "floormap_ap_detail": 24,
+    "rf_neighbors": 9,
 }
 
 
@@ -305,6 +327,29 @@ def _self_check() -> None:
         for col in ft.overrides:
             if col not in ft.columns:
                 raise RuntimeError(f"FileType {ft.key}: override for unknown column '{col}'")
+        if ft.ap_link_groups:
+            grouped: set[str] = set()
+            for group in ft.ap_link_groups:
+                for col in group:
+                    if col not in ft.columns:
+                        raise RuntimeError(
+                            f"FileType {ft.key}: ap_link_groups has unknown column '{col}'"
+                        )
+                    if col in grouped:
+                        raise RuntimeError(
+                            f"FileType {ft.key}: column '{col}' appears in multiple ap_link_groups"
+                        )
+                    grouped.add(col)
+            identity_cols = {
+                c for c in ft.columns
+                if c not in AP_LINK_EXCLUDE and ft.rule_for(c) in AP_IDENTITY_TYPES
+            }
+            missing = identity_cols - grouped
+            if missing:
+                raise RuntimeError(
+                    f"FileType {ft.key}: AP identity columns missing from ap_link_groups: "
+                    f"{sorted(missing)}"
+                )
 
 
 _self_check()
@@ -357,3 +402,17 @@ def ap_link_columns(ft: FileType) -> tuple[str, ...]:
         if rule in AP_IDENTITY_TYPES:
             cols.append(col)
     return tuple(cols)
+
+
+def ap_link_column_groups(ft: FileType) -> tuple[tuple[str, ...], ...]:
+    """同一行内で「同じ AP を指す列」のグループ一覧を返す。
+
+    ``ap_link_groups`` が未指定の種別では、AP 識別列すべてを 1 グループとして扱う
+    （1 行に 1 台の AP しか現れない従来の種別の挙動）。
+    """
+    if not ft.ap_link_groups:
+        return (ap_link_columns(ft),)
+    return tuple(
+        tuple(c for c in group if c not in AP_LINK_EXCLUDE and ft.rule_for(c) in AP_IDENTITY_TYPES)
+        for group in ft.ap_link_groups
+    )

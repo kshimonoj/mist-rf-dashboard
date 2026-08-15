@@ -13,7 +13,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, engine
-from mist.client import MistClient, SLE_METRICS, parse_sle_metric
+from mist.client import MistClient, RRM_BANDS, SLE_METRICS, parse_sle_metric
 from models import AppSettings, ApEvent, ApMetrics, ClientMetrics, RadioConfigChange, RadioConfigCurrent, Snapshot
 from radio_helpers import detect_band_source, overall_source
 from utils import fmt_dt, fmt_dt_tz
@@ -98,6 +98,11 @@ CLIENT_CSV_COLUMNS = [
 AP_EVENTS_CSV_COLUMNS = [
     "event_timestamp", "site_name", "ap_name", "ap_mac", "event_type", "reason",
     "band", "channel", "pre_channel", "bandwidth", "pre_bandwidth",
+]
+
+RF_NEIGHBORS_CSV_COLUMNS = [
+    "timestamp", "site_id", "site_name", "band",
+    "ap_mac", "ap_name", "neighbor_mac", "neighbor_name", "rssi",
 ]
 
 
@@ -602,6 +607,135 @@ async def save_floormap_log(
 
     logger.info(f"[FLOORMAP SAVE] Saved: {filepath} ({len(rows)} records)")
     return filename
+
+
+def _norm_mac(value: str | None) -> str:
+    """MAC をコロンなし小文字へ正規化する（プロジェクト規約）。"""
+    return (value or "").replace(":", "").replace("-", "").lower()
+
+
+def _build_rf_neighbor_rows(
+    ts_str: str,
+    site_id: str,
+    site_name: str,
+    band: str,
+    results: list[dict],
+    ap_names: dict[str, str],
+) -> list[dict]:
+    """RRM neighbors のレスポンスを CSV 行へ展開する。
+
+    隣接関係は非対称なので、**方向ごとに 1 行**として出力する（対称化はしない）。
+    ``ap_names`` で解決できない MAC は名前を空欄にしたまま行を残す
+    （サイト外 AP の混入を後から検出できるようにするため）。
+    """
+    rows: list[dict] = []
+    for entry in results or []:
+        ap_mac = _norm_mac(entry.get("mac"))
+        if not ap_mac:
+            continue
+        for nb in entry.get("neighbors") or []:
+            nb_mac = _norm_mac(nb.get("mac"))
+            if not nb_mac:
+                continue
+            rows.append({
+                "timestamp": ts_str,
+                "site_id": site_id,
+                "site_name": site_name,
+                "band": band,
+                "ap_mac": ap_mac,
+                "ap_name": ap_names.get(ap_mac, ""),
+                "neighbor_mac": nb_mac,
+                "neighbor_name": ap_names.get(nb_mac, ""),
+                "rssi": nb.get("rssi"),
+            })
+    return rows
+
+
+async def save_rf_neighbors_log(
+    now: datetime,
+    tz_obj,
+    tz_abbr: str,
+    filename_suffix: str = "",
+) -> str | None:
+    """全監視対象サイトの RRM 隣接（2.4 / 5 / 6GHz）を取得して CSV に保存する。
+
+    クラウド側の RRM 更新は毎晩 1 回なので、取得も日次 1 回で十分。
+    取得失敗（404 / 権限不足 / RRM 未有効）はサイト・バンド単位の警告に留め、
+    他サイト・他バンド・他のログ収集は止めない。
+    """
+    client = MistClient()
+    org_id = client.org_id
+    sites = await client.get_sites(org_id)
+    if not sites:
+        logger.info("[RF NEIGHBORS SAVE] No sites.")
+        return None
+    if _monitored_site_ids:
+        sites = [s for s in sites if s.get("id") in _monitored_site_ids]
+
+    now_local = now.astimezone(tz_obj)
+    ts_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+    rows: list[dict] = []
+
+    for site in sites:
+        site_id = site.get("id", "")
+        site_name = site.get("name", "")
+        try:
+            devices = await client.get_site_devices_stats(site_id)
+        except Exception as e:
+            logger.warning(f"[RF NEIGHBORS SAVE] Failed to get devices for site {site_id}: {e}")
+            devices = []
+        ap_names = {
+            _norm_mac(d.get("mac")): (d.get("name") or "")
+            for d in devices
+            if d.get("mac")
+        }
+
+        for band in RRM_BANDS:
+            try:
+                results = await client.get_rrm_neighbors(site_id, band)
+            except Exception as e:
+                logger.warning(
+                    f"[RF NEIGHBORS SAVE] Failed for site {site_id} band {band}: {e}"
+                )
+                continue
+            if not results:
+                logger.info(f"[RF NEIGHBORS SAVE] site {site_id} band {band}: no RRM neighbors")
+                continue
+            rows.extend(
+                _build_rf_neighbor_rows(ts_str, site_id, site_name, band, results, ap_names)
+            )
+
+    if not rows:
+        logger.info("[RF NEIGHBORS SAVE] No RRM neighbor data, skipping CSV write.")
+        return None
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    if filename_suffix:
+        filename = (
+            f"rf_neighbors_{now_local.strftime('%Y%m%d_%H%M%S')}_{tz_abbr}_{filename_suffix}.csv"
+        )
+    else:
+        filename = f"rf_neighbors_{now_local.strftime('%Y%m%d_%H%M')}_{tz_abbr}.csv"
+    filepath = os.path.join(LOGS_DIR, filename)
+
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=RF_NEIGHBORS_CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    logger.info(f"[RF NEIGHBORS SAVE] Saved: {filepath} ({len(rows)} records)")
+    return filename
+
+
+async def save_rf_neighbors_daily() -> None:
+    """RRM 隣接ログの日次取得ジョブ。失敗しても例外を外に出さない。"""
+    now = datetime.now(timezone.utc)
+    tz_obj = ZoneInfo(_app_timezone)
+    now_local = now.astimezone(tz_obj)
+    try:
+        await save_rf_neighbors_log(now, tz_obj, now_local.strftime("%Z"))
+    except Exception as e:
+        logger.error(f"[RF NEIGHBORS SAVE] Daily save failed: {e}")
 
 
 def _build_sle_csv_row(ts_str: str, site_id: str, site_name: str,

@@ -1,0 +1,5 @@
+timestamp,site_id,site_name,band,ap_mac,ap_name,neighbor_mac,neighbor_name,rssi
+2024-01-01 09:00:00,00000000-0000-4000-8000-000000000001,TestSite Alpha,5,aabbccddee01,TEST-AP-01,aabbccddee02,TEST-AP-02,-58.0
+2024-01-01 09:00:00,00000000-0000-4000-8000-000000000001,TestSite Alpha,5,aabbccddee02,TEST-AP-02,aabbccddee01,TEST-AP-01,-64.0
+2024-01-01 09:00:00,00000000-0000-4000-8000-000000000001,TestSite Alpha,5,aabbccddee01,TEST-AP-01,aabbccddeeff,,-80.0
+2024-01-01 09:00:00,00000000-0000-4000-8000-000000000001,TestSite Alpha,24,aabbccddee01,TEST-AP-01,aabbccddee02,TEST-AP-02,-50.0

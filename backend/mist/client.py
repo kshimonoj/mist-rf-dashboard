@@ -16,6 +16,12 @@ SLE_METRICS = ["capacity", "throughput", "coverage", "time-to-connect", "roaming
 RESTART_EVENT_TYPES = ["AP_RESTARTED", "AP_RESTART_BY_USER"]
 NOTABLE_EVENT_TYPES = RESTART_EVENT_TYPES + ["AP_RADAR_DETECTED", "AP_PORT_DOWN"]
 
+#: RRM 隣接を取得するバンド（どれを使うかは分析側で判断するため収集時点では絞らない）
+RRM_BANDS = ["24", "5", "6"]
+
+#: RRM 隣接のページ送りの上限（暴走防止）
+_RRM_MAX_PAGES = 100
+
 
 def _sum_sle_samples(samples: dict) -> tuple[float, float]:
     """samples は {"total": [...], "degraded": [...]} 形式。total==1 はnull番兵として除外。"""
@@ -123,6 +129,10 @@ class MistClient:
                         continue
                     if resp.status_code in (401, 403):
                         logger.error(f"Auth error {resp.status_code} on {url}")
+                        return []
+                    if resp.status_code == 404:
+                        # リトライしても結果は変わらないので即座に諦める
+                        logger.warning(f"Not found (404) on {url}")
                         return []
                     resp.raise_for_status()
                     return resp.json()
@@ -284,6 +294,36 @@ class MistClient:
             key = (ev.get("timestamp"), ev.get("mac") or ev.get("ap"), ev.get("type"))
             deduped.setdefault(key, ev)
         return list(deduped.values())
+
+    async def get_rrm_neighbors(self, site_id: str, band: str, limit: int = 100) -> list[dict]:
+        """GET /sites/{site_id}/rrm/neighbors/band/{band} をページングで全件取得する。
+
+        戻り値はレスポンスの ``results`` 配列
+        （``[{"mac": 観測側MAC, "neighbors": [{"mac": 被観測側MAC, "rssi": float}, ...]}, ...]``）。
+        隣接関係は**非対称**なので、方向を潰さずそのまま返す。
+        RRM 未有効・権限不足・404 の場合は空リストを返す（呼び出し側は警告に留めること）。
+        """
+        collected: list[dict] = []
+        for page in range(1, _RRM_MAX_PAGES + 1):
+            result = await self._get(
+                f"/sites/{site_id}/rrm/neighbors/band/{band}",
+                params={"limit": limit, "page": page},
+            )
+            if not isinstance(result, dict):
+                break
+            results = result.get("results") or []
+            if not results:
+                break
+            collected.extend(results)
+            total = result.get("total")
+            if not isinstance(total, int) or len(collected) >= total:
+                break
+        else:
+            logger.warning(
+                f"get_rrm_neighbors: reached max page count ({_RRM_MAX_PAGES}) "
+                f"for site {site_id} band {band}"
+            )
+        return collected
 
     async def get_site_clients(self, site_id: str) -> list[dict]:
         """GET /sites/{site_id}/stats/clients?wired=false で無線クライアント一覧を取得する。

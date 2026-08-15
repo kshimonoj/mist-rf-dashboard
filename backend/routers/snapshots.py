@@ -122,6 +122,11 @@ async def create_snapshot() -> dict[str, Any]:
         except Exception as fm_err:
             logger.warning(f"Floor map log save failed (non-critical): {fm_err}")
 
+        try:
+            await sched_module.save_rf_neighbors_log(now, tz_obj, tz_abbr, filename_suffix="manual")
+        except Exception as rf_err:
+            logger.warning(f"RF neighbors log save failed (non-critical): {rf_err}")
+
         return {
             "id": snap.id,
             "filename": snap.filename,

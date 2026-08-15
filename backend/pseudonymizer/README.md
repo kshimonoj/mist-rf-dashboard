@@ -86,12 +86,14 @@ python -m pseudonymizer new_logs/ --out ~/pseudo-logs-2 \
 
 | 種別キー | 列数 | 備考 |
 |---|---|---|
-| `ap_metrics` | 33 | |
+| `ap_metrics` | 36 | 末尾に `map_id` / `x_m` / `y_m` を持つ現行版 |
+| `ap_metrics_v1` | 33 | 座標列追加前の過去ログ |
 | `ap_events` | 11 | `ap_events_backfill_*.csv` を含む |
 | `client_metrics` | 36 | |
 | `sle_metrics` | 28 | |
 | `floormap_summary` | 8 | `floormap_*_manual_summary.csv` を含む |
 | `floormap_ap_detail` | 24 | フロア図上の AP ごとの生データ（座標・チャネル・電力等） |
+| `rf_neighbors` | 9 | RRM 隣接。1 行に AP が 2 台（観測側・被観測側）並ぶ |
 
 変換ルールは**グローバルな辞書 1 つ**（`schemas.COLUMN_RULES`）だけで定義し、
 種別ごとには「通す列のホワイトリスト」（`FileType.columns`）だけを持つ。
@@ -101,6 +103,20 @@ python -m pseudonymizer new_logs/ --out ~/pseudo-logs-2 \
 新しいファイル種別を追加するときは `schemas.py` に `FileType` を 1 つ足すだけでよい。
 ただし既存のどの種別とも列集合が重複しないこと（重複すると import 時に自己チェックで
 `RuntimeError` になる）。
+
+### 1 行に複数台の AP が並ぶ種別（`ap_link_groups`）
+
+既定では「同一行の AP 識別列（`ap_id` / `ap_name` / `ap_mac` 等）はすべて同じ AP を指す」
+とみなして番号を揃える。`rf_neighbors` のように 1 行に 2 台が並ぶ種別では、
+`FileType.ap_link_groups` で組を明示する。
+
+```python
+ap_link_groups=(("ap_mac", "ap_name"), ("neighbor_mac", "neighbor_name"))
+```
+
+組を分けないと観測側と被観測側が同一 AP として union され、隣接グラフが壊れる。
+なお `neighbor_mac` / `neighbor_name` の**名前空間は `ap_mac` / `ap_name` と同一**であり、
+同じ AP はどの列に現れても同じ仮名になる（別名前空間にすると突合できなくなるため）。
 
 ### `floormap_ap_detail` の列
 
@@ -130,8 +146,8 @@ num_clients, x_m, y_m
 | `SITE_ID` | `site_id` | `20000000-0000-4000-8000-{連番12桁}` |
 | `SITE_NAME` | `site_name` | `SITE_{連番3桁}` |
 | `AP_ID` | `ap_id` | `10000000-0000-4000-8000-{連番12桁}` |
-| `AP_NAME` | `ap_name` | `AP_{連番4桁}` |
-| `AP_MAC` | `mac`(ap_metrics, floormap_ap_detail), `ap_mac`, `bssid` | `020` + 連番 9 桁 hex |
+| `AP_NAME` | `ap_name`, `neighbor_name` | `AP_{連番4桁}` |
+| `AP_MAC` | `mac`(ap_metrics, floormap_ap_detail), `ap_mac`, `neighbor_mac`, `bssid` | `020` + 連番 9 桁 hex |
 | `CLIENT_MAC` | `mac`(client_metrics) | `021` + 連番 9 桁 hex（AP_MAC と別系列） |
 | `HOSTNAME` | `hostname` | `HOST_{連番4桁}` |
 | `IP` | `ip` | `10.{連番}.{連番}.{連番}` |
