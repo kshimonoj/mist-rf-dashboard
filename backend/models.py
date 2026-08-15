@@ -176,6 +176,7 @@ class AppSettings(Base):
     last_insights_analyzed_at = Column(DateTime, nullable=True)
     metrics_retention_days = Column(Integer, default=7)
     long_history_enabled = Column(Boolean, default=False)
+    log_retention_days = Column(Integer, default=30)
 
 
 class Insight(Base):

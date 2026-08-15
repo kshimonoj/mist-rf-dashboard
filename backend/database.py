@@ -92,6 +92,13 @@ def migrate_db():
                 ("long_history_enabled", "BOOLEAN DEFAULT 0"),
             ])
 
+            # app_settings: ログ保持日数（log_retention_days）カラム追加
+            # 従来はプロセス内グローバルのみで永続化されておらず、コンテナ再起動で
+            # 既定値(30)に戻っていた。
+            _add_columns(conn, "app_settings", [
+                ("log_retention_days", "INTEGER DEFAULT 30"),
+            ])
+
             # insights: 検知履歴の蓄積方式へ移行（detected_at → first_detected_at + 追加カラム）
             _rename_columns(conn, "insights", [
                 ("detected_at", "first_detected_at"),

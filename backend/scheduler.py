@@ -46,6 +46,9 @@ def _persist_last_log_saved_at(dt: datetime) -> None:
 
 LOGS_DIR = "/app/data/logs"
 _MAX_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB
+# サイズキャップ超過時でも、直近 N 件の ap_metrics スナップショットは削除しない
+# （全滅させてダッシュボードが直近データを失うのを防ぐフロア）
+_MIN_KEEP_SNAPSHOTS = 10
 
 SLE_CSV_COLUMNS = [
     "timestamp", "site_id", "site_name", "ap_id", "ap_name",
@@ -227,8 +230,41 @@ def rotate_logs(retention_days: int) -> None:
         )
         if total <= _MAX_TOTAL_BYTES:
             return
-        excess = db.query(Snapshot).order_by(Snapshot.saved_at.asc()).all()
-        for snap in excess:
+
+        # 削除候補は ap_metrics（Snapshotに登録されるCSV）のみ。data/logs には
+        # 他種別のCSV（client_metrics 等）も溜まるが、Snapshot に登録されないため
+        # ここでは削除対象にできない（他種別を含めた根治は別途対応）。
+        # 直近 _MIN_KEEP_SNAPSHOTS 件は常に保持し、削除候補から除外する。
+        all_snaps = db.query(Snapshot).order_by(Snapshot.saved_at.asc()).all()
+        if len(all_snaps) > _MIN_KEEP_SNAPSHOTS:
+            candidates = all_snaps[: len(all_snaps) - _MIN_KEEP_SNAPSHOTS]
+        else:
+            candidates = []
+
+        deletable_bytes = sum(
+            os.path.getsize(os.path.join(LOGS_DIR, snap.filename))
+            for snap in candidates
+            if os.path.isfile(os.path.join(LOGS_DIR, snap.filename))
+        )
+        if total - deletable_bytes > _MAX_TOTAL_BYTES:
+            # ap_metrics を候補分すべて削除してもキャップを下回れない
+            # = data/logs の容量は他種別のファイルに占められている。
+            # 中途半端に ap_metrics を全滅させるより、何もせず運用者に知らせる方が
+            # 安全なので削除を見送る。
+            # 注意: この状態が続く限りサイズキャップは実質的に無効化される
+            # （このジョブは毎回 0 件削除で終わる）。他種別を含めた根治対応(B)が
+            # 別途必要。
+            logger.warning(
+                f"[ROTATE] Size cap exceeded but not enforceable via ap_metrics alone: "
+                f"total={total}B cap={_MAX_TOTAL_BYTES}B "
+                f"deletable_ap_metrics={len(candidates)}files/{deletable_bytes}B "
+                f"(deleting all of them would still leave {total - deletable_bytes}B > cap). "
+                f"Non-ap_metrics files are likely dominating {LOGS_DIR}. "
+                f"Skipping deletion this run — size cap is NOT being enforced."
+            )
+            return
+
+        for snap in candidates:
             if total <= _MAX_TOTAL_BYTES:
                 break
             path = os.path.join(LOGS_DIR, snap.filename)

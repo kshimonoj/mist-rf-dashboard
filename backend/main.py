@@ -105,6 +105,15 @@ def _init_app_settings() -> None:
         settings_module._current_metrics_retention = retention
         settings_module._long_history_enabled = long_history
         logger.info(f"Metrics retention: {retention}d (long_history={long_history})")
+
+        log_retention = row.log_retention_days
+        if log_retention is None:
+            log_retention = 30
+            row.log_retention_days = log_retention
+            db.commit()
+        sched_module._log_retention_days = log_retention
+        settings_module._current_retention_days = log_retention
+        logger.info(f"Log retention: {log_retention}d")
     except Exception as e:
         logger.warning(f"_init_app_settings failed: {e}")
     finally:

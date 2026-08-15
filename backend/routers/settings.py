@@ -89,6 +89,10 @@ async def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)) -
     if body.log_retention_days is not None:
         _current_retention_days = body.log_retention_days
         sched_module._log_retention_days = body.log_retention_days
+        row = db.query(AppSettings).first()
+        if row:
+            row.log_retention_days = body.log_retention_days
+            db.commit()
 
     if body.timezone is not None:
         if body.timezone not in available_timezones():
