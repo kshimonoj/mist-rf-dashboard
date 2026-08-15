@@ -115,6 +115,40 @@ class TopNStats:
 
 
 @dataclass
+class MapInfo:
+    """1 マップの規模と、そのマップの AP が出す隣接のマップまたぎ率。"""
+
+    map_id: str
+    #: レポート内での短縮ラベル（M1, M2, ...）
+    label: str
+    #: このマップに配置されている AP 数
+    ap_count: int = 0
+    #: このマップの AP が観測側になっている RF 隣接（方向つき）の本数
+    out_links: int = 0
+    #: そのうち相手が別マップだった本数
+    cross_links: int = 0
+
+    @property
+    def cross_ratio(self) -> float | None:
+        return (self.cross_links / self.out_links) if self.out_links else None
+
+
+@dataclass
+class MapCrossPair:
+    """マップ 2 面の間をまたぐ RF 隣接の本数（方向は内訳として保持）。"""
+
+    #: 短縮ラベル（label_a <= label_b の順に正規化）
+    label_a: str
+    label_b: str
+    map_a: str
+    map_b: str
+    #: 両方向の合計（方向つきリンク数）
+    links: int = 0
+    a_to_b: int = 0
+    b_to_a: int = 0
+
+
+@dataclass
 class SiteTopology:
     """1 サイト・1 バンドの診断結果。"""
 
@@ -153,9 +187,34 @@ class SiteTopology:
     aps_with_coords: int = 0
     aps_without_coords: int = 0
 
+    # 7. マップまたぎ（方向つき RF 隣接 1 本を 1 とする）
+    link_count: int = 0
+    same_map_links: int = 0
+    same_map_no_xy_links: int = 0
+    cross_map_links: int = 0
+    unknown_map_links: int = 0
+    map_infos: list[MapInfo] = field(default_factory=list)
+    map_cross_pairs: list[MapCrossPair] = field(default_factory=list)
+
     @property
     def is_small_sample(self) -> bool:
         return self.site_ap_count < MIN_AP_COUNT_FOR_DIAGNOSIS
+
+    @property
+    def cross_map_ratio(self) -> float | None:
+        """RF 隣接のうち観測側と被観測側が別マップだった割合。"""
+        return (self.cross_map_links / self.link_count) if self.link_count else None
+
+    @property
+    def undistanceable_ratio(self) -> float | None:
+        """RF 隣接のうち距離を算出できない割合（別マップ + 座標なし）。
+
+        距離との積集合を取ると、この割合の RF 隣接がそのまま落ちる。
+        """
+        if not self.link_count:
+            return None
+        dropped = self.cross_map_links + self.unknown_map_links + self.same_map_no_xy_links
+        return dropped / self.link_count
 
 
 @dataclass
@@ -247,6 +306,29 @@ class TopologyResult:
             add(f"     座標あり AP: {s.aps_with_coords}  座標なし AP（マップ未配置）: "
                 f"{s.aps_without_coords}")
 
+            add("")
+            add("  7. マップまたぎの RF 隣接")
+            add(f"     RF 隣接（方向つき）: {s.link_count} 本  マップ数: {len(s.map_infos)}")
+            add(f"     別マップ: {s.cross_map_links} 本 "
+                f"({_fmt_pct(s.cross_map_ratio)})  "
+                f"同一マップ: {s.same_map_links} 本  "
+                f"座標なし: {s.unknown_map_links + s.same_map_no_xy_links} 本")
+            add(f"     → 距離を算出できない RF 隣接: {_fmt_pct(s.undistanceable_ratio)}"
+                "（距離との積集合を取るとこの割合が落ちる）")
+            if s.map_cross_pairs:
+                add("     マップ間のまたぎ（多い順）:")
+                for p in s.map_cross_pairs:
+                    add(f"       {p.label_a} <-> {p.label_b}  {p.links:>5} 本  "
+                        f"({p.label_a}発 {p.a_to_b} / {p.label_b}発 {p.b_to_a})")
+            else:
+                add("     マップ間のまたぎ: なし")
+            if s.map_infos:
+                add("     マップ凡例:")
+                for m in s.map_infos:
+                    add(f"       {m.label}  AP {m.ap_count:>4} 台  "
+                        f"観測リンク {m.out_links:>5} 本  "
+                        f"またぎ率 {_fmt_pct(m.cross_ratio)}  map_id={m.map_id}")
+
         add("")
         add(f"[ 警告 ] {len(self.warnings)} 件")
         if not self.warnings:
@@ -306,6 +388,23 @@ def _distance(a: dict, b: dict) -> float | None:
     if a["x_m"] is None or a["y_m"] is None or b["x_m"] is None or b["y_m"] is None:
         return None
     return math.hypot(a["x_m"] - b["x_m"], a["y_m"] - b["y_m"])
+
+
+def _link_map_kind(a: dict | None, b: dict | None) -> str:
+    """方向つき RF 隣接 1 本を、距離を出せるかどうかで分類する。
+
+    - ``"same"``       同一マップで両者に座標がある（距離を算出できる）
+    - ``"same_no_xy"`` 同一マップだが x/y が欠けている
+    - ``"cross"``      別マップ（座標系が違うため距離を出せない）
+    - ``"unknown"``    どちらかの map_id が不明（ap_metrics に無い / マップ未配置）
+    """
+    if a is None or b is None or not a["map_id"] or not b["map_id"]:
+        return "unknown"
+    if a["map_id"] != b["map_id"]:
+        return "cross"
+    if a["x_m"] is None or a["y_m"] is None or b["x_m"] is None or b["y_m"] is None:
+        return "same_no_xy"
+    return "same"
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +489,7 @@ def _detail_columns(ns: Sequence[int]) -> list[str]:
         "site_id", "site_name", "band", "ap_mac", "ap_name",
         "map_id", "x_m", "y_m", "has_coords",
         "rf_neighbor_count", "rf_neighbor_unknown", "rf_neighbor_other_map",
+        "rf_neighbor_cross_map", "rf_neighbor_cross_map_ratio",
         "rssi_min", "rssi_median", "rssi_max",
         "same_map_ap_count",
         "bidirectional_ratio", "direction_diff_max_db",
@@ -489,11 +589,39 @@ def _analyze_site(
         for n in ns
     }
 
+    # -- 7. マップまたぎ（map_id 単位の生カウンタ。ラベル付けはループ後） --
+    map_out_links: dict[str, int] = {}
+    map_cross_links: dict[str, int] = {}
+    cross_pair_counts: dict[tuple[str, str], dict[str, int]] = {}
+
     for ap_mac in sorted(set(directed) | set(site_macs)):
         info = coords.get(ap_mac)
         neighbors = directed.get(ap_mac, {})
         rf_set = set(neighbors)
         rf_rssi = [r for r in neighbors.values() if r is not None]
+
+        # 方向つきリンクを「距離を出せるか」で分類する
+        ap_map = (info or {}).get("map_id", "")
+        cross_map = 0
+        for nb in rf_set:
+            kind = _link_map_kind(info, coords.get(nb))
+            site.link_count += 1
+            if ap_map:
+                map_out_links[ap_map] = map_out_links.get(ap_map, 0) + 1
+            if kind == "cross":
+                cross_map += 1
+                site.cross_map_links += 1
+                map_cross_links[ap_map] = map_cross_links.get(ap_map, 0) + 1
+                nb_map = coords[nb]["map_id"]
+                key = (ap_map, nb_map) if ap_map <= nb_map else (nb_map, ap_map)
+                bucket = cross_pair_counts.setdefault(key, {"a": 0, "b": 0})
+                bucket["a" if ap_map == key[0] else "b"] += 1
+            elif kind == "same":
+                site.same_map_links += 1
+            elif kind == "same_no_xy":
+                site.same_map_no_xy_links += 1
+            else:
+                site.unknown_map_links += 1
 
         # 同一マップ内の他 AP との距離
         dist_pairs: list[tuple[float, str]] = []
@@ -528,6 +656,8 @@ def _analyze_site(
             "rf_neighbor_count": len(rf_set),
             "rf_neighbor_unknown": sum(1 for nb in rf_set if nb not in known_macs),
             "rf_neighbor_other_map": other_map,
+            "rf_neighbor_cross_map": cross_map,
+            "rf_neighbor_cross_map_ratio": (cross_map / len(rf_set)) if rf_set else None,
             "rssi_min": _min(rf_rssi),
             "rssi_median": _median(rf_rssi),
             "rssi_max": _max(rf_rssi),
@@ -592,6 +722,11 @@ def _analyze_site(
 
         detail_rows.append(row)
 
+    _finalize_map_crossing(
+        site, coords, set(site_macs) | set(directed),
+        map_out_links, map_cross_links, cross_pair_counts,
+    )
+
     for n in ns:
         b = per_n[n]
         site.top_n.append(TopNStats(
@@ -605,6 +740,68 @@ def _analyze_site(
             rssi_top_mean_dist_m=_mean(b["rssi_mean_dist"]),
             dist_top_mean_dist_m=_mean(b["dist_mean_dist"]),
         ))
+
+
+def _finalize_map_crossing(
+    site: SiteTopology,
+    coords: dict[str, dict],
+    macs: set[str],
+    map_out_links: dict[str, int],
+    map_cross_links: dict[str, int],
+    cross_pair_counts: dict[tuple[str, str], dict[str, int]],
+) -> None:
+    """map_id にレポート用の短縮ラベル（M1, M2, ...）を振り、内訳を並べる。
+
+    ラベルは AP 数の多い順。またぎ先にしか現れないマップ（他サイトの AP など）にも
+    ラベルを振らないと内訳が読めないため、母集団に含める。
+    """
+    ap_counts: dict[str, int] = {}
+    for mac in macs:
+        map_id = (coords.get(mac) or {}).get("map_id", "")
+        if map_id:
+            ap_counts[map_id] = ap_counts.get(map_id, 0) + 1
+
+    map_ids = set(ap_counts) | set(map_out_links)
+    for a, b in cross_pair_counts:
+        map_ids.update((a, b))
+
+    ordered = sorted(
+        map_ids,
+        key=lambda m: (-ap_counts.get(m, 0), -map_out_links.get(m, 0), m),
+    )
+    labels = {map_id: f"M{i}" for i, map_id in enumerate(ordered, start=1)}
+
+    site.map_infos = [
+        MapInfo(
+            map_id=map_id,
+            label=labels[map_id],
+            ap_count=ap_counts.get(map_id, 0),
+            out_links=map_out_links.get(map_id, 0),
+            cross_links=map_cross_links.get(map_id, 0),
+        )
+        for map_id in ordered
+    ]
+
+    rank = {map_id: i for i, map_id in enumerate(ordered)}
+    pairs: list[MapCrossPair] = []
+    for (a, b), counts in cross_pair_counts.items():
+        # 表示はラベル順（M1 <-> M2）に揃える。キーは map_id 順なので必要なら入れ替える
+        if rank[a] <= rank[b]:
+            first, second, fwd, rev = a, b, counts["a"], counts["b"]
+        else:
+            first, second, fwd, rev = b, a, counts["b"], counts["a"]
+        pairs.append(MapCrossPair(
+            label_a=labels[first],
+            label_b=labels[second],
+            map_a=first,
+            map_b=second,
+            links=fwd + rev,
+            a_to_b=fwd,
+            b_to_a=rev,
+        ))
+    site.map_cross_pairs = sorted(
+        pairs, key=lambda p: (-p.links, rank[p.map_a], rank[p.map_b])
+    )
 
 
 def _ap_bidirectional_ratio(

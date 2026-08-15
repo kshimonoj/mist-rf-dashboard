@@ -229,6 +229,81 @@ def test_ap_without_coordinates_is_counted(tmp_path):
     assert not res.detail.set_index("ap_mac").loc[E, "has_coords"]
 
 
+# ---------------------------------------------------------------------------
+# 7. マップまたぎの RF 隣接
+# ---------------------------------------------------------------------------
+
+
+def test_cross_map_ratio_is_zero_on_a_single_map(tmp_path):
+    """全 AP が同一マップなら、またぎは 0 でマップ凡例は 1 面だけになること。"""
+    s = _site(_analyze(tmp_path))
+    assert s.link_count == 9          # 方向つきリンク総数
+    assert s.same_map_links == 9
+    assert s.cross_map_links == 0
+    _approx(s.cross_map_ratio, 0.0)
+    _approx(s.undistanceable_ratio, 0.0)
+    assert s.map_cross_pairs == []
+    assert [(m.label, m.ap_count, m.out_links) for m in s.map_infos] == [("M1", 5, 9)]
+
+
+def test_cross_map_ratio_counts_directed_links(tmp_path):
+    """観測側と被観測側が別 map_id のリンクを、方向つきで数えられること。
+
+    A,B が MAP1 / C,D,E が MAP2。またぎは
+    A->C, A->D, A->E, B->C（MAP1 発 4 本）と C->A, D->A, E->A（MAP2 発 3 本）の計 7 本。
+    同一マップは A->B, B->A の 2 本。
+    """
+    res = _analyze(tmp_path, map_ids={C: MAP2, D: MAP2, E: MAP2})
+    s = _site(res)
+    assert s.link_count == 9
+    assert s.cross_map_links == 7
+    assert s.same_map_links == 2
+    assert s.unknown_map_links == 0
+    _approx(s.cross_map_ratio, 7 / 9)
+    # 距離を出せないのはまたぎの 7 本だけ（座標欠落なし）
+    _approx(s.undistanceable_ratio, 7 / 9)
+
+    # AP 数の多いマップから M1 → MAP2 が M1、MAP1 が M2
+    labels = {m.map_id: m.label for m in s.map_infos}
+    assert labels == {MAP2: "M1", MAP1: "M2"}
+    assert len(s.map_cross_pairs) == 1
+    p = s.map_cross_pairs[0]
+    assert (p.label_a, p.label_b) == ("M1", "M2")
+    assert (p.links, p.a_to_b, p.b_to_a) == (7, 3, 4)
+
+    # マップ別のまたぎ率: MAP1 発は 6 本中 4 本、MAP2 発は 3 本すべて
+    by_label = {m.label: m for m in s.map_infos}
+    _approx(by_label["M2"].cross_ratio, 4 / 6)
+    _approx(by_label["M1"].cross_ratio, 1.0)
+
+    # AP 明細にもまたぎ本数が出る（A は B 以外の 3 台がまたぎ）
+    detail = res.detail.set_index("ap_mac")
+    assert detail.loc[A, "rf_neighbor_cross_map"] == 3
+    _approx(detail.loc[A, "rf_neighbor_cross_map_ratio"], 3 / 4)
+    assert detail.loc[C, "rf_neighbor_cross_map"] == 1
+
+
+def test_cross_map_excludes_links_with_unknown_map(tmp_path):
+    """map_id が不明な相手（ap_metrics 外・マップ未配置）はまたぎに数えないこと。"""
+    links = RF_LINKS + [(A, OUTSIDE, -85.0)]
+    s = _site(_analyze(tmp_path, links=links, map_ids={E: ""}))
+    # A->OUTSIDE（ap_metrics 外）, A->E / E->A（マップ未配置）の 3 本が「不明」
+    assert s.link_count == 10
+    assert s.unknown_map_links == 3
+    assert s.cross_map_links == 0
+    assert s.same_map_links == 7
+    # 距離を出せないのは不明の 3 本
+    _approx(s.undistanceable_ratio, 3 / 10)
+
+
+def test_cross_map_stats_are_rendered(tmp_path):
+    res = _analyze(tmp_path, map_ids={C: MAP2, D: MAP2, E: MAP2})
+    text = res.render()
+    assert "7. マップまたぎの RF 隣接" in text
+    assert "M1 <-> M2" in text
+    assert MAP2 in text
+
+
 def test_used_timestamp_is_the_latest_snapshot(tmp_path):
     later = datetime(2026, 1, 2, 4, 30, 0)
     S.write_metrics(tmp_path / "ap_metrics.csv", _metrics_rows(COORDS))

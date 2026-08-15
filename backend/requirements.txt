@@ -6,3 +6,6 @@ apscheduler==3.10.4
 pydantic==2.7.1
 python-dotenv==1.0.1
 tzdata
+# hangap（ログ分析）。コンテナ内で topology-report / analyze を実行するため runtime に含める
+pandas==3.0.5
+openpyxl==3.1.5
