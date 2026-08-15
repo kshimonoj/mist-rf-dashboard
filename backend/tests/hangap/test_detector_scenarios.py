@@ -174,31 +174,74 @@ def test_scenario_d_ap_down(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_e_gap_splits_the_interval(tmp_path):
-    """ゼロ区間の途中に欠測 → 2 区間に分かれ、前半が 打ち切り(欠測)。"""
+def test_scenario_e_gap_truncates_and_does_not_resume(tmp_path):
+    """ゼロ区間の途中に欠測 → 手前が 打ち切り(欠測) で終わり、向こう側は区間にならない。
+
+    欠測の向こう側の最初のサンプルは「直前サンプルの num_clients >= 1」を満たさない
+    （直前は欠測の手前のゼロ）。区間の開始条件はギャップの前後で変わらないので、
+    ここから新しい区間は始まらない。連続ゼロ回数が欠測を跨いで過大になることも当然ない。
+    """
     counts = [5] + [0] * 21 + [5] * 3
     out = run(tmp_path, ap_rows(1, counts, skip=(11, 12, 13)))
 
-    assert len(out) == 2
-    first, second = out.iloc[0], out.iloc[1]
+    assert len(out) == 1
+    first = out.iloc[0]
 
     assert first["区間番号"] == 1
-    assert first["AP内区間数"] == 2
+    assert first["AP内区間数"] == 1
     assert first["回復状況"] == STATUS_CUT_GAP
     assert first["連続ゼロ回数"] == 10  # index 1〜10。欠測の向こう側は数えない
     assert first["ゼロ終了"] == START + timedelta(seconds=INTERVAL * 10)
     assert pd.isna(first["回復時刻"])
     assert pd.isna(first["直後clients（回復時）"])
 
-    # 欠測の向こう側は「新しい区間」として採番が続く
+
+def test_scenario_e_zero_on_both_sides_of_the_gap_yields_one_interval(tmp_path):
+    """ギャップの前後ともゼロが続くだけなら、2 つ目の区間は検出されないこと。
+
+    ログ収集が断続的な環境で「ずっとゼロなだけの AP」がギャップの数だけ区間として
+    量産されるのを防ぐための最重要の回帰テスト。
+    """
+    # 欠測を 2 回挟んでも、1→0 の遷移は先頭の 1 回しかない
+    counts = [5] + [0] * 30 + [5] * 3
+    out = run(tmp_path, ap_rows(1, counts, skip=(11, 12, 13, 21, 22, 23)))
+
+    assert len(out) == 1
+    assert out.iloc[0]["回復状況"] == STATUS_CUT_GAP
+    assert out.iloc[0]["ゼロ開始"] == START + timedelta(seconds=INTERVAL * 1)
+    # 直前clients は必ず >= 1（0 の区間が混ざっていないこと）
+    assert int(out.iloc[0]["直前clients"]) >= 1
+
+
+def test_scenario_e_previous_sample_is_always_one_or_more(tmp_path):
+    """どの検出区間も「直前clients >= 1」を満たすこと（区間の開始条件そのものの確認）。"""
+    counts = [5] + [0] * 21 + [5] * 3
+    out = run(tmp_path, ap_rows(1, counts, skip=(11, 12, 13)))
+
+    prev = pd.to_numeric(out["直前clients"], errors="coerce")
+    assert not out.empty
+    assert (prev >= 1).all(), "直前clients が 1 未満の区間が検出されています"
+
+
+def test_scenario_e_new_transition_after_the_gap_is_detected(tmp_path):
+    """ギャップの向こう側でも 1→0 の遷移が実際にあれば、通常どおり検出されること。
+
+    再開を止めた副作用で「ギャップ以降を一切見なくなる」わけではないことの確認。
+    """
+    # index 1〜10 ゼロ → 欠測 → index 14〜17 は端末あり → index 18 から再びゼロ
+    counts = [5] + [0] * 10 + [0, 0, 0] + [5] * 4 + [0] * 5 + [5] * 3
+    out = run(tmp_path, ap_rows(1, counts, skip=(11, 12, 13)))
+
+    assert len(out) == 2
+    first, second = out.iloc[0], out.iloc[1]
+    assert first["回復状況"] == STATUS_CUT_GAP
+    assert first["連続ゼロ回数"] == 10
+
     assert second["区間番号"] == 2
     assert second["回復状況"] == STATUS_RECOVERED
-    assert second["連続ゼロ回数"] == 8  # index 14〜21
-    assert second["ゼロ開始"] == START + timedelta(seconds=INTERVAL * 14)
-    assert second["回復時刻"] == START + timedelta(seconds=INTERVAL * 22)
-
-    # 合計しても「跨いだ 1 区間」にはならない
-    assert first["連続ゼロ回数"] + second["連続ゼロ回数"] == 18
+    assert second["ゼロ開始"] == START + timedelta(seconds=INTERVAL * 18)
+    assert second["連続ゼロ回数"] == 5  # index 18〜22
+    assert int(second["直前clients"]) == 5
 
 
 def test_scenario_e_gap_has_missing_samples(tmp_path):

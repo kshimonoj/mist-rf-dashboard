@@ -65,10 +65,16 @@ NEIGHBOR_COLUMNS: tuple[str, ...] = (
     "周辺AP端末数合計",
     "周辺AP判定",
     "周辺AP RF隣接数",
+    "周辺AP実測なし数",
 )
 
 #: 近傍AP を並べるときの区切り（名前・距離・端末数の 3 列で同じ順序・同じ件数）
 NEIGHBOR_SEPARATOR: str = ", "
+
+#: 区間中のサンプルが 1 件も無く、端末数を実測できなかった近傍AP の表示。
+#: **推定値で埋めない。** 判定根拠を人が確かめる機能である以上、実測でない値が
+#: 実測と同じ見た目で混ざるほうが有害なため、空欄（0 と紛らわしい）でもなく明示する。
+NO_MEASUREMENT: str = "実測なし"
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +138,9 @@ class NeighborContext:
     by_ap: dict[str, list[Neighbor]] = field(default_factory=dict)
     #: ap_id → 判定不能の理由（``REASON_*``）
     reasons: dict[str, str] = field(default_factory=dict)
-    #: ap_id → (timestamp[int64], num_clients[float]) の昇順配列
-    series: dict[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+    #: ap_id → (timestamp[int64], num_clients[float], 許容幅[ns]) の昇順配列。
+    #: 許容幅は **その AP の推定サンプリング間隔の半分**（:func:`_client_series` を参照）。
+    series: dict[str, tuple[np.ndarray, np.ndarray, int]] = field(default_factory=dict)
     #: ap_name → ap_id（explain で名前から引くため。同名は最後の 1 件が残る）
     ids_by_name: dict[str, str] = field(default_factory=dict)
 
@@ -150,27 +157,28 @@ class NeighborContext:
         return self.reason_of(ap_id) if ap_id is not None else REASON_NO_COORDS
 
     def mean_clients(self, ap_id: str, start: pd.Timestamp, end: pd.Timestamp) -> float | None:
-        """区間（``start`` 〜 ``end``、両端を含む）の平均 num_clients。
+        """区間（``start`` 〜 ``end``）の平均 num_clients。**実測値のみを返す。**
 
-        区間中にサンプルが 1 件も無い AP は、区間の直前まで持っていた値
-        （``end`` 以前の最後の値）で代用する。それも無ければ None。
+        探索窓は前後に「その AP の推定サンプリング間隔の半分」だけ広げる。AP ごとに
+        ポーリング位相がずれている環境で、区間の端に載るはずのサンプルが窓の外へ
+        こぼれるのを防ぐためである。許容幅は必ず間隔の半分**未満**に収まるので、
+        隣のポーリング周期のサンプルを引き込むことはない（区間外の値が混ざらない）。
+
+        それでもサンプルが 1 件も無ければ ``None`` を返す。**推定値で代用しない。**
+        判定根拠を人が確かめる機能である以上、実測でない値を実測と同じ見た目で
+        混ぜるほうが有害だからである。呼び出し側は ``実測なし`` として明示すること。
         """
         found = self.series.get(str(ap_id))
         if found is None:
             return None
-        ts, clients = found
-        lo = int(np.searchsorted(ts, np.int64(pd.Timestamp(start).value), side="left"))
-        hi = int(np.searchsorted(ts, np.int64(pd.Timestamp(end).value), side="right"))
-        if hi > lo:
-            seg = clients[lo:hi]
-            seg = seg[~np.isnan(seg)]
-            if seg.size:
-                return float(seg.mean())
-        head = clients[:hi]
-        valid = np.flatnonzero(~np.isnan(head))
-        if valid.size:
-            return float(head[valid[-1]])
-        return None
+        ts, clients, tolerance_ns = found
+        lo = int(np.searchsorted(ts, np.int64(pd.Timestamp(start).value) - tolerance_ns, side="left"))
+        hi = int(np.searchsorted(ts, np.int64(pd.Timestamp(end).value) + tolerance_ns, side="right"))
+        if hi <= lo:
+            return None
+        seg = clients[lo:hi]
+        seg = seg[~np.isnan(seg)]
+        return float(seg.mean()) if seg.size else None
 
     # -- 列 -----------------------------------------------------------------
 
@@ -181,7 +189,12 @@ class NeighborContext:
         zero_end: pd.Timestamp,
         threshold: float = DEFAULT_NEIGHBOR_CLIENT_THRESHOLD,
     ) -> dict[str, object]:
-        """1 区間分の周辺AP列を作る。判定不能なら数値列は欠損にする。"""
+        """1 区間分の周辺AP列を作る。判定不能なら数値列は欠損にする。
+
+        端末数を実測できなかった近傍は ``実測なし`` と表示し、合計にも含めない
+        （0 として足すと「周辺に人がいなかった」と読めてしまうため）。何台が実測できて
+        いないかは ``周辺AP実測なし数`` で分かるようにする。
+        """
         empty: dict[str, object] = {
             "周辺AP数": pd.NA,
             "周辺AP名": "",
@@ -190,6 +203,7 @@ class NeighborContext:
             "周辺AP端末数合計": pd.NA,
             "周辺AP判定": VERDICT_UNKNOWN,
             "周辺AP RF隣接数": pd.NA,
+            "周辺AP実測なし数": pd.NA,
         }
         found = self.neighbors_of(ap_id)
         if not found:
@@ -205,9 +219,12 @@ class NeighborContext:
             "周辺AP数": len(found),
             "周辺AP名": NEIGHBOR_SEPARATOR.join(n.ap_name for n in found),
             "周辺AP距離": NEIGHBOR_SEPARATOR.join(_fmt1(n.distance_m) for n in found),
-            "周辺AP端末数": NEIGHBOR_SEPARATOR.join(_fmt1(m) for m in means),
+            "周辺AP端末数": NEIGHBOR_SEPARATOR.join(
+                NO_MEASUREMENT if m is None else _fmt1(m) for m in means
+            ),
             "周辺AP端末数合計": pd.NA if total is None else round(total, 1),
             "周辺AP判定": verdict,
+            "周辺AP実測なし数": len(means) - len(available),
             # 参考列。rf_neighbors が無ければ空にする（エラーにはしない）
             "周辺AP RF隣接数": sum(1 for n in found if n.in_rf) if self.has_rf else pd.NA,
         }
@@ -274,9 +291,17 @@ def _rf_pairs(rf_neighbors: pd.DataFrame | None) -> set[tuple[str, str]]:
     }
 
 
-def _client_series(metrics: pd.DataFrame) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """ap_id ごとの (timestamp[int64], num_clients[float]) を時刻昇順で持つ。"""
-    out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+def _client_series(metrics: pd.DataFrame) -> dict[str, tuple[np.ndarray, np.ndarray, int]]:
+    """ap_id ごとの (timestamp[int64], num_clients[float], 許容幅[ns]) を時刻昇順で持つ。
+
+    許容幅は **その AP の推定サンプリング間隔（連続サンプル差の中央値）の半分**。
+    :meth:`NeighborContext.mean_clients` の探索窓を前後に広げるために使う。
+
+    間隔の半分に固定するのが要点で、これより広げると隣のポーリング周期のサンプルを
+    引き込んで「区間外の値」が平均に混ざる。半分未満なら、位相のずれで端からこぼれた
+    サンプルだけを拾い直せる。サンプルが 1 件しかない AP は許容幅 0 とする。
+    """
+    out: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}
     if metrics is None or len(metrics) == 0:
         return out
     if not {"ap_id", "timestamp", "num_clients"} <= set(metrics.columns):
@@ -290,9 +315,16 @@ def _client_series(metrics: pd.DataFrame) -> dict[str, tuple[np.ndarray, np.ndar
     )
     df = df[df["timestamp"].notna()].sort_values("timestamp", kind="stable")
     for ap_id, grp in df.groupby("ap_id", sort=False):
+        ts = grp["timestamp"].to_numpy(dtype="datetime64[ns]").astype("int64")
+        tolerance_ns = 0
+        if ts.size >= 2:
+            interval_ns = float(np.median(np.diff(ts)))
+            if np.isfinite(interval_ns) and interval_ns > 0:
+                tolerance_ns = int(interval_ns // 2)
         out[str(ap_id)] = (
-            grp["timestamp"].to_numpy(dtype="datetime64[ns]").astype("int64"),
+            ts,
             grp["num_clients"].to_numpy(dtype="float64", na_value=np.nan),
+            tolerance_ns,
         )
     return out
 
@@ -426,14 +458,19 @@ def _explain_neighbors(row: pd.Series, context: NeighborContext | None) -> list[
     for i, name in enumerate(names):
         distance = distances[i] if i < len(distances) else ""
         mean = clients[i] if i < len(clients) else ""
+        # 実測できなかった近傍は、値の代わりに「実測なし」と出す（推定値では埋めない）
+        value = f"{mean:>6}" if mean and mean != NO_MEASUREMENT else f"{NO_MEASUREMENT:>6}"
         lines.append(
-            f"    {name:<{width}}   距離 {distance:>6}m   "
-            f"区間中の平均clients {mean if mean else '-':>6}"
+            f"    {name:<{width}}   距離 {distance:>6}m   区間中の平均clients {value}"
         )
 
     total = row.get("周辺AP端末数合計")
     total_text = "-" if total is None or pd.isna(total) else f"{float(total):.1f}"
-    lines.append(f"  周辺AP端末数合計: {total_text}  → {_text(row.get('周辺AP判定'))}")
+    missing = row.get("周辺AP実測なし数")
+    note = ""
+    if missing is not None and not pd.isna(missing) and int(missing) > 0:
+        note = f"（うち {int(missing)} 台は実測なし。合計には含めていない）"
+    lines.append(f"  周辺AP端末数合計: {total_text}{note}  → {_text(row.get('周辺AP判定'))}")
 
     rf_count = row.get("周辺AP RF隣接数")
     if rf_count is not None and not pd.isna(rf_count):

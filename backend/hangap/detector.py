@@ -322,9 +322,15 @@ def _scan_ap(
 ) -> list[dict]:
     """1 AP 分の系列からゼロ区間を切り出す（しきい値の適用前）。
 
-    区間の開始条件は次のいずれか:
+    区間の開始条件は **1 つだけ**:
       - 直前サンプルの num_clients >= 1、当該サンプルが 0（本来の 1→0 の遷移）
-      - 直前の区間が打ち切られた直後で、まだ 0 が続いている（欠測／AP停止の向こう側）
+
+    打ち切り（欠測 / AP停止）の向こう側でゼロが続いていても、そこから新しい区間は
+    開始しない。「最初から接続端末がゼロなら対象外」という要件は欠測の前後で変わらず、
+    ギャップの向こう側の最初のサンプルは「直前サンプルが >= 1」を満たさないためである。
+    こうしないと、ログ収集が断続的な環境で「ずっとゼロなだけの AP」が、ギャップの数だけ
+    区間として量産されてしまう（実測でデモ環境の検出 2345 区間のうち 1866 件がこれだった）。
+    欠測をまたいで続くハング自体は、ギャップ手前の ``打ち切り(欠測)`` 区間として残る。
 
     区間は次のいずれかで終わる:
       - 次のサンプルが無い                 → 継続中
@@ -345,17 +351,12 @@ def _scan_ap(
         c = clients[i]
         return c is not None and not pd.isna(c) and float(c) >= 1.0
 
-    resume_pending = False  # 直前の区間が打ち切られ、まだ 0 が続いている
     i = 1
     while i < n:
-        connected = statuses[i] == CONNECTED
-        if not (connected and is_zero(i) and (has_clients(i - 1) or resume_pending)):
-            if connected and has_clients(i):
-                resume_pending = False
+        if not (statuses[i] == CONNECTED and is_zero(i) and has_clients(i - 1)):
             i += 1
             continue
 
-        resume_pending = False
         last = i
         while True:
             nxt = last + 1
@@ -386,8 +387,6 @@ def _scan_ap(
                 "samples": last - i + 1,
             }
         )
-        if end_status in (STATUS_CUT_GAP, STATUS_CUT_AP_DOWN):
-            resume_pending = True
         i = last + 1
     return intervals
 
@@ -643,7 +642,7 @@ def _to_frame(rows: Iterable[dict]) -> pd.DataFrame:
         "区間番号", "AP内区間数", "直前clients", "直後clients（回復時）",
         "連続ゼロ回数", "AP最大clients",
         "サイト合計clients(ゼロ開始時)", "サイト合計clients(ゼロ終了時)",
-        "周辺AP数", "周辺AP RF隣接数",
+        "周辺AP数", "周辺AP RF隣接数", "周辺AP実測なし数",
     ):
         df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
     for col in ("サイト全体変化率", "周辺AP端末数合計"):

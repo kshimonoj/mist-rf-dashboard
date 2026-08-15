@@ -19,9 +19,14 @@ INTERVAL = 60
 
 TARGET = "TARGET-AP"
 NEIGHBOR = "NEAR-AP"
+CLEAN = "CLEAN-AP"
 
 #: 一目で偽物と分かる MAC（コロンなし小文字）
-_MACS: dict[str, str] = {TARGET: "aabbccddee01", NEIGHBOR: "aabbccddee02"}
+_MACS: dict[str, str] = {
+    TARGET: "aabbccddee01",
+    NEIGHBOR: "aabbccddee02",
+    CLEAN: "aabbccddee03",
+}
 
 #: index 3〜12 の 10 サンプルがゼロ区間
 TARGET_VALUES: list[int] = [1, 1, 1] + [0] * 10 + [1] * 7
@@ -141,11 +146,16 @@ def test_explain_for_unknown_ap_is_not_an_error(tmp_path, capsys):
 
 
 def _truncation_heavy_rows() -> list[dict]:
-    """ゼロ区間の途中に欠測を挟み、2 区間のうち 1 区間を「打ち切り(欠測)」にする。"""
+    """検出 2 区間のうち 1 区間（50%）を「打ち切り(欠測)」にする。
+
+    TARGET はゼロ区間の途中で欠測して打ち切られる（欠測の向こう側は 1→0 の遷移が無いので
+    区間にならない）。CLEAN は普通に回復する区間を 1 つ持ち、比率が 100% にならないようにする。
+    """
     values = [1, 1, 1] + [0] * 8 + [0] * 6 + [0] * 8 + [1, 1, 1]
     skip = set(range(11, 17))  # 6 サンプル欠測（サンプリング間隔の 1.5 倍を大きく超える）
     rows = _rows(TARGET, 0.0, values, skip=skip)
     rows += _rows(NEIGHBOR, 10.0, [8] * len(values), skip=skip)
+    rows += _rows(CLEAN, 20.0, [1, 1, 1] + [0] * 8 + [1] * 3)  # 欠測なし → 回復
     return rows
 
 

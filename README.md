@@ -231,6 +231,13 @@ the zero-sample count becomes too large — it never raises an error, so the mis
 notice. Gaps with zero actually-missing samples (sampling jitter, e.g. a 460 s gap on a 300 s
 interval) never truncate an interval — only a gap that dropped at least one sample does.
 
+An interval starts on exactly one condition: **the previous sample had `num_clients >= 1`** and
+this one is zero. That rule does not change around a gap — an interval truncated by a gap does
+not resume on the far side, because the first sample after the gap has a zero predecessor. A
+hang spanning a gap is still reported, as the `打ち切り(欠測)` interval before it. Without this
+rule an AP that is merely always at zero gets emitted once per gap: on the demo environment that
+inflated 479 real intervals to 2345.
+
 `window_start` / `window_end` are both optional and only decide which intervals are *in scope*
 (whether an interval's zero-start falls in the range) — they never truncate the samples used to
 resolve an interval. Recovery, the following client count, event correlation, and even the
@@ -278,11 +285,21 @@ and physical proximity answers it better. `周辺AP RF隣接数` is a **referenc
 many of the distance-picked neighbours also appear in `rf_neighbors`. It never affects the
 verdict, and it is left blank (never an error) when `rf_neighbors` was not loaded.
 
-Seven columns are appended to the result; the existing 22 columns keep their names and order.
+Eight columns are appended to the result; the existing 22 columns keep their names and order.
 `周辺AP端末数` is each neighbour's **mean `num_clients` during the interval** (zero-start to
-zero-end, inclusive), and `周辺AP判定` is `周辺に端末あり` when `周辺AP端末数合計 >=
+zero-end), and `周辺AP判定` is `周辺に端末あり` when `周辺AP端末数合計 >=
 neighbor_client_threshold`. Like `継続中` and `退場疑い`, this verdict never filters rows — it is
 material for the reader to judge with.
+
+**Every neighbour client count is measured, never estimated.** APs do not all poll on the same
+phase, so on a short interval a neighbour's sample can fall just outside the window. The lookup
+window is therefore widened by **half that AP's estimated sampling interval** on each side —
+half, because anything wider would reach into the adjacent polling cycle and mix a genuinely
+out-of-interval value into the mean. If a neighbour still has no sample in the widened window,
+it is reported as `実測なし` rather than back-filled with an earlier value, it is left out of
+`周辺AP端末数合計` (adding it as 0 would read as "nobody was around"), and `周辺AP実測なし数`
+says how many neighbours that happened to. `--explain` prints `実測なし` in place of the number,
+so the reasoning on screen is always traceable to a real measurement.
 
 > **The defaults are provisional.** `neighbor_count=4`, `max_distance_m=25`, and
 > `neighbor_client_threshold=1.0` are starting points to be tuned against real site data, not

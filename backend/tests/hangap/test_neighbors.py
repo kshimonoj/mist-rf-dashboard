@@ -62,7 +62,10 @@ def _rows_for(
     x_m: float | None,
     y_m: float | None,
     values: list[int],
+    *,
+    offset_seconds: int = 0,
 ) -> list[dict]:
+    """``offset_seconds`` はポーリング位相のずれ（AP ごとに数秒〜数十秒ずれる環境の再現）。"""
     coords: dict[str, object] = {}
     if map_id is not None:
         coords["map_id"] = map_id
@@ -72,7 +75,7 @@ def _rows_for(
         coords["y_m"] = y_m
     return [
         S.metrics_row(
-            START + timedelta(seconds=INTERVAL * i),
+            START + timedelta(seconds=INTERVAL * i + offset_seconds),
             ap_id=_ap_id(ap_name),
             ap_name=ap_name,
             mac=_mac(ap_name),
@@ -210,7 +213,12 @@ def test_ap_metrics_v1_without_coordinate_columns_is_undecidable(tmp_path):
 
 
 def test_neighbor_client_mean_uses_only_samples_inside_the_interval(tmp_path):
-    """周辺AP端末数は区間中（ゼロ開始〜ゼロ終了）の平均で、区間外を含まないこと。"""
+    """周辺AP端末数は区間中（ゼロ開始〜ゼロ終了）の平均で、区間外を含まないこと。
+
+    探索窓は推定サンプリング間隔の半分だけ広げているが、その幅は間隔の半分未満なので
+    **隣のポーリング周期のサンプルには届かない**。区間の直前・直後に 100 を置いても
+    平均に混ざらないことで、その性質を確認する。
+    """
     # 区間中だけ 10、区間外は 100。単純平均なら 10.0 になる。
     inside = [100] * 3 + [10] * 10 + [100] * 7
     assert len(inside) == len(TARGET_VALUES)
@@ -222,6 +230,69 @@ def test_neighbor_client_mean_uses_only_samples_inside_the_interval(tmp_path):
 
     assert str(row["周辺AP端末数"]) == "10.0"
     assert float(row["周辺AP端末数合計"]) == pytest.approx(10.0)
+    assert int(row["周辺AP実測なし数"]) == 0
+
+
+def test_phase_shifted_neighbor_is_still_measured(tmp_path):
+    """位相がずれた近傍AP でも、許容幅（間隔の半分）の中なら実測値を拾えること。
+
+    AP ごとにポーリング位相がずれる環境では、短い区間だと近傍のサンプルが区間の
+    外へこぼれる。代用値で埋めるのではなく、探索窓を広げて **実測のまま** 拾う。
+    """
+    # 1 サンプルだけのゼロ区間（ゼロ開始 == ゼロ終了 == START+60s）
+    target = [1, 0, 1, 1, 1, 1]
+    # 近傍は +20 秒ずれ（間隔 60 秒の半分 30 秒より内側）。t=80s のサンプルだけが窓に入る
+    shifted = [100, 7, 100, 100, 100, 100]
+
+    rows = _rows_for(TARGET, "map-a", 0.0, 0.0, target)
+    rows += _rows_for("NEAR-05", "map-a", 5.0, 0.0, shifted, offset_seconds=20)
+    df = _detect(tmp_path, rows, min_zero_samples=1)
+    row = _target_row(df)
+
+    assert row["ゼロ開始"] == row["ゼロ終了"]  # 前提: 区間長 0 のケース
+    assert str(row["周辺AP端末数"]) == "7.0"  # 実測値そのもの（代用値ではない）
+    assert int(row["周辺AP実測なし数"]) == 0
+
+
+def test_neighbor_without_samples_is_reported_as_not_measured(tmp_path):
+    """区間中に実測が無い近傍は「実測なし」と明示し、合計にも含めないこと。
+
+    推定値で埋めると、判定根拠を確かめるための表示に実測でない値が実測と同じ見た目で
+    混ざる。0 として足すのも「周辺に人がいなかった」と誤読させるため避ける。
+    """
+    rows = _rows_for(TARGET, "map-a", 0.0, 0.0, TARGET_VALUES)
+    rows += _rows_for("NEAR-05", "map-a", 5.0, 0.0, [6] * len(TARGET_VALUES))
+    # この近傍は区間よりずっと後ろにしかサンプルを持たない（許容幅でも届かない）
+    rows += _rows_for(
+        "NEAR-10", "map-a", 10.0, 0.0, [50] * len(TARGET_VALUES),
+        offset_seconds=INTERVAL * 100,
+    )
+    df = _detect(tmp_path, rows)
+    row = _target_row(df)
+
+    assert _names(row) == ["NEAR-05", "NEAR-10"]
+    assert str(row["周辺AP端末数"]) == f"6.0, {neighbors.NO_MEASUREMENT}"
+    assert int(row["周辺AP実測なし数"]) == 1
+    # 合計は実測できた 1 台分だけ（実測なしを 0 として足していない）
+    assert float(row["周辺AP端末数合計"]) == pytest.approx(6.0)
+
+
+def test_explain_marks_not_measured_neighbors(tmp_path):
+    """explain でも「実測なし」が値と区別して見えること。"""
+    rows = _rows_for(TARGET, "map-a", 0.0, 0.0, TARGET_VALUES)
+    rows += _rows_for("NEAR-05", "map-a", 5.0, 0.0, [6] * len(TARGET_VALUES))
+    rows += _rows_for(
+        "NEAR-10", "map-a", 10.0, 0.0, [50] * len(TARGET_VALUES),
+        offset_seconds=INTERVAL * 100,
+    )
+    S.write_metrics(tmp_path / "ap_metrics.csv", rows)
+    res = load(tmp_path)
+    ctx = neighbors.build_context(res.metrics, res.rf_neighbors)
+    df = detect(res.metrics, res.events, res.gaps, neighbor_context=ctx)
+
+    text = neighbors.render_explain(df, [TARGET], ctx)
+    assert neighbors.NO_MEASUREMENT in text
+    assert "1 台は実測なし。合計には含めていない" in text
 
 
 def test_interval_mean_is_the_average_of_varying_samples(tmp_path):
