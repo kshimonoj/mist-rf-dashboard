@@ -9,9 +9,12 @@
   エラーにならず連続ゼロ回数だけが過大になるため、ローダの ``gaps`` を使って必ず打ち切る。
   ただし ``missing_samples == 0`` のギャップ（サンプリング間隔のジッタ。実測で 300 秒間隔に
   対し 506 秒。データは 1 件も欠けていない）は打ち切り対象にしない。
-- ``window_start`` / ``window_end`` は **「区間のゼロ開始がその範囲内にあるか」の判定にだけ使う**。
-  区間の終了・回復判定・直後clients・イベント相関・ゼロ直前時刻には、窓の外を含む
-  読み込み済みの全サンプルを使う（サンプル自体を窓で切り落とさない）。
+- ``window_start`` / ``window_end`` を指定したら、**分析に使うサンプルをその範囲に限定する**。
+  区間の終了・回復判定・直後clients・ゼロ直前時刻・``AP最大clients``・サイト全体トレンドの
+  すべてで、窓の外のサンプルは一切参照しない。窓の外を見に行く上限が無いと、区間が指定期間の
+  外へ無制限に伸びる（実測で 6 時間の窓を指定して 6 日先まで伸びた）。
+  **例外はイベント相関だけ** で、イベントは ``ゼロ終了 ± event_window`` で相関を取るため
+  窓の外のものも参照する（``event_window`` で上限が決まるので無制限には伸びない）。
 - 判定材料（サイト全体の増減など）は列として足すだけで、**行は落とさない**。
   絞り込みは利用者側の責務とする。``周辺AP判定`` も同じで、行のフィルタには使わない。
 - 周辺 AP の判定ロジック（距離・近傍集合）そのものは :mod:`hangap.neighbors` に置き、
@@ -192,10 +195,10 @@ def _event_detail(row: pd.Series) -> str:
 
 
 def _prepare_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
-    """型を揃えた metrics を返す（窓による絞り込みはしない）。
+    """型を揃えた metrics を返す（窓による絞り込みは :func:`_apply_window` で別に行う）。
 
-    区間の終了・回復判定・イベント相関・ゼロ直前時刻には、窓の外を含む
-    読み込み済みの全サンプルを使う。窓は候補区間の選別（ゼロ開始が窓内か）にだけ使う。
+    カバレッジ警告は「窓に対してデータが足りているか」を見るものなので、
+    絞り込む **前** のこの DataFrame を対象にする。
     """
     missing = [c for c in _REQUIRED_METRICS_COLUMNS if c not in metrics.columns]
     if missing:
@@ -211,6 +214,49 @@ def _prepare_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
     df["ap_name"] = df["ap_name"].astype("string").fillna("")
     df["site_name"] = df["site_name"].astype("string").fillna("")
     return df.sort_values(["ap_id", "timestamp"], kind="stable").reset_index(drop=True)
+
+
+def _apply_window(
+    prepared: pd.DataFrame,
+    window_start: pd.Timestamp | None,
+    window_end: pd.Timestamp | None,
+) -> pd.DataFrame:
+    """分析対象のサンプルを窓 ``[window_start, window_end)`` に限定する。
+
+    窓を指定していない側は制限しない（両方省略なら読み込んだ全サンプルが対象）。
+
+    連続するサンプルの組（ギャップ判定に使う）は窓の内側でもそのまま保たれるため、
+    :func:`_scan_ap` のアルゴリズムはこの絞り込みの影響を受けない。窓の先頭の
+    サンプルだけは「直前サンプル」を失うので、そこから始まる区間は検出されなくなる
+    （仕様どおりの帰結。窓の外を見に行かないことと引き換えである）。
+    """
+    if window_start is None and window_end is None:
+        return prepared
+    mask = pd.Series(True, index=prepared.index)
+    if window_start is not None:
+        mask &= prepared["timestamp"] >= window_start
+    if window_end is not None:
+        mask &= prepared["timestamp"] < window_end
+    return prepared[mask].reset_index(drop=True)
+
+
+def _sampling_interval(prepared: pd.DataFrame) -> pd.Timedelta | None:
+    """サンプリング間隔の代表値（AP ごとの中央値の中央値）。推定できなければ None。
+
+    window_start 側のカバレッジ警告のしきい値に使う。ログの 1 サンプル目が窓の開始から
+    数秒ずれているだけ（毎正時保存のログを窓ぴったりに指定すれば普通に起きる）で警告を
+    出すと毎回鳴る警告になり、本当にデータが欠けているときの警告まで読み飛ばされる。
+    """
+    if prepared.empty:
+        return None
+    per_ap = [
+        grp["timestamp"].diff().dropna().median()
+        for _, grp in prepared.groupby("ap_id", sort=False)
+        if len(grp) >= 2
+    ]
+    if not per_ap:
+        return None
+    return pd.Series(per_ap).median()
 
 
 def _gap_boundaries(gaps: pd.DataFrame | None) -> dict[str, set[tuple[pd.Timestamp, pd.Timestamp]]]:
@@ -272,9 +318,13 @@ def _warn_insufficient_coverage(
     """読み込んだデータが窓に対して足りない場合に警告する（エラーにはしない）。
 
     History Log は 1 時間単位のため、任意の時間帯を分析するには複数ファイルの結合が
-    必要になり、窓の外側のデータが欠けやすい。欠けたまま検出すると、窓の先頭付近の
-    区間は検出漏れに、窓の右端付近の区間は「継続中」への誤分類やイベント相関の欠落に
-    つながる。
+    必要になり、窓の外側のデータが欠けやすい。欠けたまま検出すると、窓の右端付近の
+    区間は「継続中」への誤分類やイベント相関の欠落につながる。
+
+    **「窓の先頭で始まる区間が検出されない」ことは警告しない。** 窓を指定したら窓の外の
+    サンプルは一切見ないので、それは常に真であり、毎回鳴る警告になる。ここで警告するのは
+    「指定した期間の一部にそもそもデータが無い」という別の問題（データ開始が window_start
+    より後）だけである。窓の先頭の件は分析条件の説明として出す（:func:`analysis.condition_text`）。
 
     window_end 側（データ終端 / イベント終端）は、不足が仕様どおりの遅延の範囲内なら警告しない。
     ログ保存は毎正時のため、window_end を現在時刻にすると必ず最大 1 保存間隔分のずれが生じる。
@@ -294,21 +344,26 @@ def _warn_insufficient_coverage(
        区別できるようにはならない。この警告は「イベント相関が薄いかもしれない」程度の
        参考情報として扱うこと。
 
-    window_start 側はデータそのものが窓の範囲内に存在しないという別種の情報のため、
-    この閾値の対象にしない。
+    window_start 側は「指定した期間の一部にデータが無い」という別種の情報のため、
+    ``log_save_interval`` の対象にしない（しきい値はサンプリング間隔）。
     """
     if prepared.empty:
         return
     data_min = prepared["timestamp"].min()
     data_max = prepared["timestamp"].max()
 
-    if window_start is not None and data_min >= window_start:
-        warnings.warn(
-            f"読み込んだデータに window_start（{_fmt_ts(window_start)}）より前のサンプルが"
-            f"ありません（データ開始: {_fmt_ts(data_min)}）。"
-            "窓の先頭付近で始まる区間は直前clientsが取得できず、検出されない可能性があります。",
-            stacklevel=3,
-        )
+    if window_start is not None and data_min > window_start:
+        deficit = data_min - window_start
+        interval = _sampling_interval(prepared)
+        # 1 サンプル分にも満たないずれ（毎正時保存のログを窓ぴったりに指定した場合など）は
+        # データの欠けではないので警告しない。
+        if interval is None or deficit >= interval:
+            warnings.warn(
+                f"読み込んだデータは window_start（{_fmt_ts(window_start)}）より後から"
+                f"始まっています（データ開始: {_fmt_ts(data_min)}、不足 {_fmt_timedelta(deficit)}）。"
+                "指定した期間の先頭部分には分析対象のサンプルがありません。",
+                stacklevel=3,
+            )
 
     if window_end is None:
         return
@@ -453,10 +508,13 @@ def detect(
     :param gaps: ローダの ``gaps``。**必ず渡すこと。** None だと欠測を跨いだ区間を
         連結してしまい、連続ゼロ回数が過大になる（エラーにならないため気づけない）。
         ``missing_samples == 0`` のギャップ（サンプリング間隔のジッタ）は打ち切り対象にしない。
-    :param window_start: 対象とする区間の「ゼロ開始」の下限（含む）。省略可（省略時は制限なし）。
-        **サンプル自体は絞り込まない。** 区間の終了・回復判定・直後clients・イベント相関・
-        ゼロ直前時刻には、窓の外を含む読み込み済みの全サンプルを使う。
-    :param window_end: 対象とする区間の「ゼロ開始」の上限（含まない）。省略可（省略時は制限なし）。
+    :param window_start: 分析対象とする期間の下限（含む）。省略可（省略時は制限なし）。
+        **サンプル自体をこの範囲に絞り込む。** 区間の終了・回復判定・直後clients・
+        ゼロ直前時刻・``AP最大clients``・サイト全体トレンドで、窓の外のサンプルは参照しない。
+        その帰結として、``window_start`` の直後にゼロへ落ちる区間は（直前サンプルが窓の外に
+        なるため）検出されない。イベント相関だけは例外で、窓の外のイベントも参照する。
+    :param window_end: 分析対象とする期間の上限（含まない）。省略可（省略時は制限なし）。
+        この時点でまだゼロが続いている区間は ``継続中`` になる。
     :param min_zero_samples: 採用する連続ゼロの最小 **サンプル数**（時間ではない）。
         サンプリング間隔は環境で異なる（実測でデモ 30 秒 / 顧客 5 分）ため、
         既定の 5 は 5 分間隔なら 25 分、30 秒間隔ではわずか 2.5 分にしかならない。
@@ -485,16 +543,19 @@ def detect(
 
     ``window_start`` / ``window_end`` に対して読み込み済みデータが不足している場合
     （History Log の結合漏れ等）は ``UserWarning`` を出す（エラーにはしない）。
-    ただし window_end 側は、不足が仕様どおりの遅延の範囲内（データ終端は
-    ``log_save_interval`` 未満、イベント終端は ``log_save_interval + event_window`` 未満）
-    なら警告しない。
+    ただし不足が仕様どおりの範囲内なら警告しない（window_start 側はサンプリング間隔未満、
+    データ終端は ``log_save_interval`` 未満、イベント終端は
+    ``log_save_interval + event_window`` 未満）。窓の先頭で始まる区間が検出されないことは
+    仕様であり、警告しない。
     """
     prepared = _prepare_metrics(metrics)
     ws = pd.Timestamp(window_start) if window_start is not None else None
     we = pd.Timestamp(window_end) if window_end is not None else None
     ev_window = _as_timedelta(event_window)
     log_interval = _as_timedelta(log_save_interval)
+    # 警告は「窓に対してデータが足りているか」を見るので、絞り込む前のデータで判定する
     _warn_insufficient_coverage(prepared, events, ws, we, ev_window, log_interval)
+    prepared = _apply_window(prepared, ws, we)
 
     boundaries = _gap_boundaries(gaps)
     totals = _site_totals(prepared)
@@ -537,28 +598,11 @@ def detect(
         if not adopted:
             continue
 
-        # 窓は「ゼロ開始が範囲内か」の選別にのみ使う。区間の解決自体は全サンプルで行う。
-        windowed = [
-            iv for iv in adopted
-            if (ws is None or timestamps[iv["start"]] >= ws)
-            and (we is None or timestamps[iv["start"]] < we)
-        ]
-        if not windowed:
-            continue
+        # grp は既に窓で絞り込まれているので、これが窓内の最大値になる
+        # （元の手作業の分析仕様どおり）。
+        ap_max_clients = grp["num_clients"].max()
 
-        # AP最大clients は窓内の最大値（元の手作業の分析仕様どおり）。
-        if ws is None and we is None:
-            ap_max_clients = grp["num_clients"].max()
-        else:
-            mask = pd.Series(True, index=grp.index)
-            if ws is not None:
-                mask &= grp["timestamp"] >= ws
-            if we is not None:
-                mask &= grp["timestamp"] < we
-            windowed_clients = grp.loc[mask, "num_clients"]
-            ap_max_clients = windowed_clients.max() if len(windowed_clients) else pd.NA
-
-        for number, iv in enumerate(windowed, start=1):
+        for number, iv in enumerate(adopted, start=1):
             start_i, last_i = iv["start"], iv["last"]
             zero_start, zero_end = timestamps[start_i], timestamps[last_i]
             recovery = iv["recovery"]
@@ -570,7 +614,7 @@ def detect(
                 "ap_name": str(ap_names[start_i]),
                 "site_name": site,
                 "区間番号": number,
-                "AP内区間数": len(windowed),
+                "AP内区間数": len(adopted),
                 "ゼロ直前時刻": timestamps[start_i - 1],
                 "直前clients": clients[start_i - 1],
                 "直後clients（回復時）": clients[recovery] if recovery is not None else pd.NA,

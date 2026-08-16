@@ -3,6 +3,15 @@
 History Log は 1 時間単位のため、任意の時間帯を分析するには複数ファイルの結合が必要になり、
 窓の外側のデータが欠けやすい。欠けたまま検出すると誤分類につながるため、detect() は
 エラーにはせず警告だけを出す。合成データで意図的にデータ範囲を狭めて発生させる。
+
+窓を指定したら窓内のサンプルだけで分析するため、「窓の先頭で始まる区間が検出されない」ことは
+**常に真** であり、警告しない（毎回鳴る警告は読み飛ばされ、本当に問題があるときの警告まで
+無視されるようになる）。警告するのは次の 3 つだけ。
+
+  1. データ開始が window_start より後（指定した期間の一部にデータが無い）
+  2. データ終端が window_end に届いていない（しきい値 log_save_interval）
+  3. イベント終端が window_end + event_window に届いていない
+     （しきい値 log_save_interval + event_window）
 """
 from __future__ import annotations
 
@@ -50,8 +59,12 @@ def test_no_warning_when_coverage_is_sufficient(tmp_path):
         run(tmp_path, rows, window_start=SAFE_START, window_end=SAFE_END)
 
 
-def test_warns_when_no_data_before_window_start(tmp_path):
-    """window_start より前のサンプルが 1 件も無ければ警告する。"""
+def test_warns_when_data_starts_after_window_start(tmp_path):
+    """データが window_start より後から始まっていれば警告する。
+
+    窓の先頭で始まる区間が検出されない件とは別で、「指定した期間の一部にそもそも
+    分析対象のサンプルが無い」という状態である。
+    """
     rows = _rows(12)
     window_start = START - timedelta(minutes=30)  # データより前
 
@@ -60,7 +73,35 @@ def test_warns_when_no_data_before_window_start(tmp_path):
         run(tmp_path, rows, window_start=window_start, window_end=SAFE_END)
 
     messages = [str(w.message) for w in caught]
-    assert any("window_start" in m and "より前" in m for m in messages)
+    assert any("window_start" in m and "より後から" in m for m in messages)
+
+
+def test_no_warning_when_data_covers_window_start(tmp_path):
+    """データが window_start をカバーしていれば、窓の先頭についての警告は出ない。
+
+    窓を指定したら窓の外は見ないので「窓の先頭で始まる区間は検出されない」が、
+    それは仕様どおりであり警告しない（毎回鳴る警告にしない）。
+    """
+    rows = _rows(12)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        # 窓の開始をデータの 1 サンプル目ぴったりに置く（窓の外にサンプルは 1 件も無い）
+        run(tmp_path, rows, window_start=START, window_end=SAFE_END)
+
+
+def test_no_warning_when_data_starts_within_one_sampling_interval(tmp_path):
+    """1 サンプル分にも満たないずれでは警告しない。
+
+    毎正時保存のログを「16:00 から」のようにぴったり指定すると、1 サンプル目は必ず
+    数秒〜数分後になる。これをデータの欠けとして毎回警告すると読み飛ばされる。
+    """
+    rows = _rows(12)
+    window_start = START - timedelta(seconds=INTERVAL - 5)  # 不足はサンプリング間隔未満
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        run(tmp_path, rows, window_start=window_start, window_end=SAFE_END)
 
 
 def test_warns_when_data_does_not_reach_window_end(tmp_path):
@@ -140,9 +181,9 @@ def test_warns_when_window_end_deficit_exceeds_log_save_interval(tmp_path):
 
 
 def test_window_start_warning_is_unaffected_by_log_save_interval(tmp_path):
-    """window_start 側の警告は log_save_interval に関係なく従来どおり出る。"""
+    """window_start 側の警告は log_save_interval に関係なく出る（しきい値はサンプリング間隔）。"""
     rows = _rows(12)
-    window_start = START - timedelta(minutes=5)  # データより前（不足はログ保存間隔よりずっと小さい）
+    window_start = START - timedelta(minutes=30)  # 不足はログ保存間隔（60分）よりは小さい
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -153,7 +194,7 @@ def test_window_start_warning_is_unaffected_by_log_save_interval(tmp_path):
         )
 
     messages = [str(w.message) for w in caught]
-    assert any("window_start" in m and "より前" in m for m in messages)
+    assert any("window_start" in m and "より後から" in m for m in messages)
 
 
 def test_no_warning_when_event_deficit_is_below_log_save_interval(tmp_path):

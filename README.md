@@ -238,20 +238,28 @@ hang spanning a gap is still reported, as the `打ち切り(欠測)` interval be
 rule an AP that is merely always at zero gets emitted once per gap: on the demo environment that
 inflated 479 real intervals to 2345.
 
-`window_start` / `window_end` are both optional and only decide which intervals are *in scope*
-(whether an interval's zero-start falls in the range) — they never truncate the samples used to
-resolve an interval. Recovery, the following client count, event correlation, and even the
-sample just before zero-start may all come from outside the window. This means loading log
-files that only cover the target hour will miss a "previous sample" lookup right at the window's
-start (that interval simply won't be detected — load a little extra history if you need it), and
-an interval whose zero-start lands right at `window_end` still resolves correctly using whatever
-data follows it in the loaded file.
+`window_start` / `window_end` are both optional. When either is given, the analysis is
+restricted to the samples inside `[window_start, window_end)`: the interval end, the recovery
+check, the following client count, `AP最大clients` and the site-wide totals never look outside
+it. A run of zeros still going at `window_end` is reported as `継続中`, so the zero-sample count
+is bounded by the window (a 6-hour window at a 5-minute interval tops out at 72 samples).
+Without that bound an interval runs as far past the requested period as the loaded data allows —
+a 6-hour window over a week of stadium logs produced a zero interval that ended six days later.
+
+Event correlation is the one exception: events are matched against `zero-end ± event_window`, so
+events after `window_end` are still picked up. Events are a separate log from the metrics, and
+that lookup is bounded by `event_window`, so it cannot run away.
+
+One consequence: the sample at the head of the window has no predecessor inside the window, so
+an interval that drops to zero right after `window_start` is not detected. That is by design, so
+it is not a warning — it is stated in the analysis-conditions line of every run instead. Start
+the window a little earlier if you need those intervals.
 
 If the loaded data doesn't actually cover the requested window (a common risk when joining
 hourly History Log files), `detect()` emits a `UserWarning` — it never raises an error:
 
-- no sample before `window_start` → an interval starting right at the window's head may go
-  undetected (its "previous sample" lookup has nothing to find)
+- data starts after `window_start` (by at least one sampling interval) → part of the requested
+  period has no samples at all
 - data doesn't reach `window_end` → a trailing interval may be misclassified as "ongoing" when
   it would actually have recovered given more log
 - events don't reach `window_end + event_window` → event correlation near the window's end may

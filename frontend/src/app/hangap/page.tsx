@@ -626,6 +626,8 @@ export default function HangApPage() {
 
         <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
           期間はログの時刻表記（タイムゾーンなし）で指定します。両方とも省略すると全データが対象です。
+          期間を指定した場合はその期間のサンプルだけで分析するため、期間の先頭で始まる区間は検出されず、
+          終了時点でゼロが続く区間は「継続中」になります。
         </p>
 
         <button

@@ -354,32 +354,35 @@ def test_window_limits_the_scan(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# H: window_start より前の直前サンプル（サンプル自体は絞り込まない）
+# H: 窓の先頭で始まる区間（窓の外は見ないので検出されない）
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_h_previous_sample_outside_window_start(tmp_path):
-    """window_start より前に clients>=1 のサンプルがあり、window_start 直後にゼロへ
-    落ちて回復する区間 → 検出され、直前clients・ゼロ直前時刻は窓外のサンプルの値になる。
+def test_scenario_h_interval_starting_at_window_head_is_not_detected(tmp_path):
+    """window_start の直後にゼロへ落ちる区間は検出されない（**仕様どおりの帰結**）。
 
-    window_start はサンプル自体を絞り込まない（「ゼロ開始が範囲内か」の判定にのみ使う）ため、
-    直前clients を取るサンプルが window_start より前にあってもよい。
+    窓を指定したら窓の外のサンプルは一切見ないため、窓の先頭のサンプルには「直前サンプル」が
+    無く、開始条件（直前サンプルの num_clients >= 1）を満たしようがない。区間が指定期間の
+    外へ無制限に伸びないことと引き換えの帰結であり、バグではない。毎回起きるので警告には
+    せず、分析条件（``analysis.condition_text``）で利用者に伝える。
     """
     counts = [5, 5, 5] + [0] * 7 + [5] * 3
-    # index2（直前サンプル）は窓の外、index3（ゼロ開始）は窓のすぐ内側になるよう置く
+    # index2（clients>=1 の直前サンプル）は窓の外、index3（ゼロ開始）は窓のすぐ内側
     window_start = START + timedelta(seconds=INTERVAL * 3 - 100)
     assert START + timedelta(seconds=INTERVAL * 2) < window_start < START + timedelta(seconds=INTERVAL * 3)
 
-    out = run(tmp_path, ap_rows(1, counts), window_start=window_start)
+    assert run(tmp_path, ap_rows(1, counts), window_start=window_start).empty
 
+    # 直前サンプルまで窓に含めれば、同じデータで従来どおり検出される
+    # （変わったのは「どの範囲のサンプルを対象にするか」だけであることの確認）
+    out = run(
+        tmp_path, ap_rows(1, counts),
+        window_start=START + timedelta(seconds=INTERVAL * 2),
+    )
     assert len(out) == 1
     row = out.iloc[0]
     assert row["回復状況"] == STATUS_RECOVERED
     assert row["連続ゼロ回数"] == 7
     assert row["ゼロ開始"] == START + timedelta(seconds=INTERVAL * 3)
-    assert row["ゼロ開始"] >= window_start
-
-    # 直前clients・ゼロ直前時刻は窓の外（index2）のサンプルの値
     assert row["直前clients"] == 5
     assert row["ゼロ直前時刻"] == START + timedelta(seconds=INTERVAL * 2)
-    assert row["ゼロ直前時刻"] < window_start

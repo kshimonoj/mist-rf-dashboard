@@ -57,9 +57,11 @@ def build_parser() -> _ArgumentParser:
     p.add_argument("--events", nargs="+", metavar="PATH", default=[],
                     help="イベントのみを明示指定（任意）")
     p.add_argument("--from", dest="window_from", metavar="TIME", default=None,
-                    help="窓の開始（YYYY-MM-DD HH:MM または ISO8601、TZ 無し）")
+                    help="分析対象期間の開始（YYYY-MM-DD HH:MM または ISO8601、TZ 無し）。"
+                         "指定するとこの期間のサンプルだけで分析する")
     p.add_argument("--to", dest="window_to", metavar="TIME", default=None,
-                    help="窓の終了（YYYY-MM-DD HH:MM または ISO8601、TZ 無し）")
+                    help="分析対象期間の終了（YYYY-MM-DD HH:MM または ISO8601、TZ 無し）。"
+                         "この時点でゼロが続く区間は「継続中」になる")
     p.add_argument("--min-zero-samples", type=int,
                     default=detector.DEFAULT_MIN_ZERO_SAMPLES)
     p.add_argument("--min-zero-duration", metavar="DURATION", default=None,

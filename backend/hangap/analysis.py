@@ -199,8 +199,16 @@ def condition_text(params: AnalysisParams, n_files: int) -> str:
         if params.min_zero_duration is not None
         else f"min_zero_samples={params.min_zero_samples}"
     )
+    # 窓を指定したら窓内のサンプルだけで分析する。その帰結（窓の先頭で始まる区間が
+    # 検出されない）は毎回起きるので、警告ではなく分析条件の説明として添える。
+    window_note = (
+        "（窓内のサンプルのみで分析。窓の先頭で始まる区間は検出されません）"
+        if params.window_start is not None
+        else ""
+    )
     return (
-        f"分析条件: 窓 {fmt_window(params.window_start, params.window_end)} / {zero_desc} / "
+        f"分析条件: 窓 {fmt_window(params.window_start, params.window_end)}{window_note} / "
+        f"{zero_desc} / "
         f"event_window={fmt_td(params.event_window)} / exodus_threshold={params.exodus_threshold} / "
         f"gap_factor={params.gap_factor} / 入力ファイル数={n_files} / "
         f"neighbor_count={params.neighbor_count} / max_distance_m={params.max_distance_m:g} / "

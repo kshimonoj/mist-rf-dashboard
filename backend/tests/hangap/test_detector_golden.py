@@ -11,18 +11,21 @@ AP 名・時刻・クライアント数などの値は出さない。
 2 本に分ける。
 
   テスト1（互換再現・完全一致を維持）:
-    detect() 自体は window_start/window_end を「サンプルの絞り込み」には使わない
-    （ゼロ直前時刻が窓の外にあってよい）。しかし「16:00-21:00 のログファイルだけを
-    読み込んだ利用者」は、そもそも 15:59 台のサンプルを **持っていない**。
-    その状況をテスト側のデータスライスで再現し（detector に互換フラグは足さない）、
-    window_end は省略して回復状況=='回復' で絞ると、期待値シートの 52 行と完全一致する。
-    このテストは今後の回帰検出の要であり、完全一致のアサートを外さない。
+    「16:00-21:00 のログファイルだけを読み込んだ利用者」は、そもそも 15:59 台のサンプルを
+    **持っていない**。その状況をテスト側のデータスライスで再現し（detector に互換フラグは
+    足さない）、window_end は省略して回復状況=='回復' で絞ると、期待値シートの 52 行と
+    完全一致する。このテストは今後の回帰検出の要であり、完全一致のアサートを外さない。
 
   テスト2（新仕様の検証・件数はハードコードしない）:
-    フルデータ（読み込んだ全サンプルを保持したまま）で window_end=21:00 を指定すると、
-    「ゼロ開始が 21:00 以降の区間」は正しく除外され、「ゼロ直前時刻が 16:00 より前の区間」
-    （テスト1のスライスでは見えなかった区間）が新たに拾える。期待値シートとの差分は
-    すべてこの 2 パターンで説明できるはずで、それ以外の差分が 0 件であることを確認する。
+    フルデータ（1週間分のログを読み込んだ状態）で 16:00-21:00 を指定すると、detect() は
+    **その期間のサンプルだけ** で分析する。期待値シートとの差分は次の 1 パターンだけで
+    説明できるはずで、それ以外の差分が 0 件であることを確認する。
+
+      - シートにあって出力に無い行 → すべて ゼロ終了 >= window_end
+        （窓の外で始まった区間か、窓の右端で打ち切られて min_zero_samples を満たさなく
+        なった区間。指定期間内で観測できたゼロが短ければ採用されない）
+      - 出力にあってシートに無い行 → 0 件
+        （窓の外のサンプルは見ないので、シートを作った利用者に見えなかった区間は出ない）
 """
 from __future__ import annotations
 
@@ -240,11 +243,11 @@ def test_neighbor_columns_are_additive_and_do_not_break_the_golden_match(loaded)
 
 
 def test_full_data_window_end_diff_is_fully_explained(loaded):
-    """フルデータ + window_end=21:00 の出力と期待値シートの差分が、以下の 2 パターンで
-    すべて説明できること（件数はコードに書かず、実行時に算出する）。
+    """フルデータ + 窓 16:00-21:00 の出力と期待値シートの差分がすべて説明できること
+    （件数はコードに書かず、実行時に算出する）。
 
-      - シートにあって出力に無い行 → すべて ゼロ開始 >= window_end
-      - 出力にあってシートに無い行 → すべて ゼロ直前時刻 < window_start
+      - シートにあって出力に無い行 → すべて ゼロ終了 >= window_end
+      - 出力にあってシートに無い行 → 0 件（窓の外のサンプルは見ないため）
     """
     res, expected = loaded
     actual = detect(
@@ -264,25 +267,24 @@ def test_full_data_window_end_diff_is_fully_explained(loaded):
 
     unexplained_expected = [
         key for key in expected_only
-        if not (pd.Timestamp(expected_keys[key].ゼロ開始) >= WINDOW_END)
-    ]
-    unexplained_actual = [
-        key for key in actual_only
-        if not (pd.Timestamp(actual_keys[key].ゼロ直前時刻) < WINDOW_START)
+        if not (pd.Timestamp(expected_keys[key].ゼロ終了) >= WINDOW_END)
     ]
 
     assert not unexplained_expected, (
-        f"シートにあって出力に無い行のうち、ゼロ開始>=window_end で説明できないものが "
+        f"シートにあって出力に無い行のうち、ゼロ終了>=window_end で説明できないものが "
         f"{len(unexplained_expected)} 件あります"
     )
-    assert not unexplained_actual, (
-        f"出力にあってシートに無い行のうち、ゼロ直前時刻<window_start で説明できないものが "
-        f"{len(unexplained_actual)} 件あります"
+    assert not actual_only, (
+        f"窓の外のサンプルを見ていないのに、シートに無い行が {len(actual_only)} 件あります"
     )
+
+    # 窓の外へ伸びないこと（本タスクの目的）を実データ側でも確認する。
+    # 値そのものは出さない（Public リポジトリのため）。
+    assert (actual["ゼロ終了"] < WINDOW_END).all()
+    assert (actual["ゼロ開始"] >= WINDOW_START).all()
 
     print(
         f"PASS（新仕様）: 一致 {len(set(expected_keys) & set(actual_keys))} 件 / "
-        f"シートのみ（21:00 以降開始）{len(expected_only)} 件 / "
-        f"出力のみ（16:00 より前を直前clientsに使用）{len(actual_only)} 件 / "
-        f"説明できない差分 0 件"
+        f"シートのみ（ゼロ終了が 21:00 以降）{len(expected_only)} 件 / "
+        f"出力のみ 0 件 / 説明できない差分 0 件"
     )
