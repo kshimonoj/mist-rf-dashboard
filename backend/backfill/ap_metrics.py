@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session, sessionmaker
 
 import database
@@ -45,6 +45,9 @@ BUCKET = timedelta(hours=1)
 
 #: サイト名を既存 CSV から補完するときに読むファイル数の上限
 _SITE_NAME_SCAN_FILES = 200
+
+#: SQLite のロック待ち秒数。既定 5 秒は復旧作業中の一瞬の競合で落ちるには短い
+_SQLITE_TIMEOUT_SECONDS = 30.0
 
 EXIT_OK = 0
 EXIT_INPUT_ERROR = 1
@@ -71,7 +74,6 @@ class BucketPlan:
     end_local: datetime
     rows: int
     sites: int
-    skipped: bool = False  # 同名ファイルが既にあり、書き出さなかった
 
 
 @dataclass
@@ -79,7 +81,11 @@ class BackfillResult:
     db_path: str
     logs_dir: str
     tz_str: str
+    #: ファイルが無く、新しく書き出した（予定の）バケット
     written: list[BucketPlan] = field(default_factory=list)
+    #: ファイルはあるが snapshots に未登録だったため、登録だけ行った（予定の）バケット
+    adopted: list[BucketPlan] = field(default_factory=list)
+    #: ファイルも snapshots の行も揃っていて、何もしなかったバケット
     skipped: list[BucketPlan] = field(default_factory=list)
     snapshots_added: int = 0
     unresolved_site_ids: list[str] = field(default_factory=list)
@@ -111,7 +117,12 @@ def open_source_db(db_path: str) -> sessionmaker:
     if not os.path.isfile(db_path):
         raise BackfillError(f"DB ファイルが見つからない: {db_path}")
     engine = create_engine(
-        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        f"sqlite:///{db_path}",
+        connect_args={
+            "check_same_thread": False,
+            # 既定の 5 秒だと、たまたま重なった書き込みで復旧作業ごと落ちる
+            "timeout": _SQLITE_TIMEOUT_SECONDS,
+        },
     )
     return sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -161,18 +172,12 @@ def to_local(db_dt: datetime, tz: ZoneInfo) -> datetime:
     return db_dt.astimezone(tz)
 
 
-def bucket_end_of(local_dt: datetime) -> datetime:
-    """現地時刻を 1 時間バケットに丸め、**期間の終端**を返す。
+def bucket_filename(end_local: datetime) -> str:
+    """自動保存と同じ命名規則（``ap_metrics_YYYYMMDD_HHMM_TZ.csv``）。
 
-    自動保存は「前回保存〜今」を今の時刻の名前で書き出すため、
+    引数は**対象期間の終端**。自動保存は「前回保存〜今」を今の時刻の名前で書き出すため、
     12:00〜13:00 のデータは ``..._1300_...csv`` になる。その規則に合わせる。
     """
-    start = local_dt.replace(minute=0, second=0, microsecond=0)
-    return start + BUCKET
-
-
-def bucket_filename(end_local: datetime) -> str:
-    """自動保存と同じ命名規則（``ap_metrics_YYYYMMDD_HHMM_TZ.csv``）。"""
     return f"ap_metrics_{end_local.strftime('%Y%m%d_%H%M')}_{end_local.strftime('%Z')}.csv"
 
 
@@ -256,30 +261,62 @@ def _scan_logs_for_site_names(logs_dir: str, wanted: set[str]) -> Iterator[tuple
 # ---------------------------------------------------------------------------
 
 
-def _iter_buckets(
-    session: Session, tz: ZoneInfo, start_utc: datetime | None, end_utc: datetime | None
-) -> Iterator[tuple[datetime, list[ApMetrics]]]:
-    """時刻順に流し読みし、1 時間バケットごとに ``(期間終端の現地時刻, 行)`` を返す。
-
-    全件を一度にメモリへ載せない（実環境は 50 万行規模）。
-    """
-    query = session.query(ApMetrics)
+def _apply_window(query, start_utc: datetime | None, end_utc: datetime | None):
     if start_utc is not None:
         query = query.filter(ApMetrics.timestamp >= start_utc)
     if end_utc is not None:
         query = query.filter(ApMetrics.timestamp < end_utc)
+    return query
 
-    current_end: datetime | None = None
-    batch: list[ApMetrics] = []
-    for row in query.order_by(ApMetrics.timestamp, ApMetrics.id).yield_per(2000):
-        end_local = bucket_end_of(to_local(row.timestamp, tz))
-        if current_end is not None and end_local != current_end:
-            yield current_end, batch
-            batch = []
-        current_end = end_local
-        batch.append(row)
-    if current_end is not None and batch:
-        yield current_end, batch
+
+def _bucket_bounds(
+    session: Session, tz: ZoneInfo, start_utc: datetime | None, end_utc: datetime | None
+) -> list[tuple[datetime, datetime]]:
+    """対象範囲を 1 時間バケット（UTC の ``[開始, 終了)``）に割る。
+
+    最初のバケットの起点は「最古の行の**現地時刻**を正時に丸めたもの」。以降は UTC で
+    1 時間ずつ進める（現地時刻で足すと DST のある TZ でバケット幅が狂うため）。
+    """
+    lo, hi = _apply_window(
+        session.query(func.min(ApMetrics.timestamp), func.max(ApMetrics.timestamp)),
+        start_utc, end_utc,
+    ).one()
+    session.rollback()  # 集計の読み取りトランザクションをここで閉じる
+    if lo is None or hi is None:
+        return []
+
+    cursor = to_utc_naive(to_local(lo, tz).replace(minute=0, second=0, microsecond=0))
+    bounds: list[tuple[datetime, datetime]] = []
+    while cursor <= hi:
+        bounds.append((cursor, cursor + BUCKET))
+        cursor += BUCKET
+    return bounds
+
+
+def _load_bucket(
+    session: Session, lo: datetime, hi: datetime,
+    start_utc: datetime | None, end_utc: datetime | None,
+) -> list[ApMetrics]:
+    """1 バケット分を**読み切って**返し、読み取りトランザクションを閉じる。
+
+    ここで ``.all()`` を使い切ってから ``rollback()`` するのが重要。``yield_per`` で
+    流し読みしたままファイル書き出し・snapshots 登録へ進むと、pysqlite は SELECT を
+    遅延実行するため SHARED ロックを掴んだままになり、同じ DB ファイルへの
+    書き込みが ``database is locked`` で落ちる（実際にこれで本番が落ちた）。
+    """
+    rows = (
+        _apply_window(
+            session.query(ApMetrics).filter(
+                ApMetrics.timestamp >= lo, ApMetrics.timestamp < hi
+            ),
+            start_utc, end_utc,
+        )
+        # 自動保存と同じ並び（サイト → AP → 時刻）
+        .order_by(ApMetrics.site_id, ApMetrics.ap_id, ApMetrics.timestamp)
+        .all()
+    )
+    session.rollback()
+    return rows
 
 
 def _write_bucket(
@@ -325,24 +362,67 @@ def _check_snapshot_db(Session_: sessionmaker) -> None:
         db.close()
 
 
-def _register_snapshot(
-    Session_: sessionmaker, filename: str, saved_at: datetime,
-    site_count: int, record_count: int,
-) -> bool:
-    """History 画面に出すため ``snapshots`` に登録する。既にあれば何もしない。"""
+def _count_csv(path: str) -> tuple[int, int]:
+    """既存 CSV の行数とサイト数を数える（孤児ファイルを登録するときの件数）。
+
+    DB の行数ではなく**ファイルの実物**を数える。snapshots はファイルの説明だから。
+    """
+    rows = 0
+    sites: set[str] = set()
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                rows += 1
+                site_id = (row.get("site_id") or "").strip()
+                if site_id:
+                    sites.add(site_id)
+    except OSError:
+        return 0, 0
+    return rows, len(sites)
+
+
+def _snapshot_for(
+    filename: str, end_local: datetime, site_count: int, record_count: int
+) -> Snapshot:
+    """登録用の ``Snapshot`` を組み立てる。
+
+    ``saved_at`` は実行時刻ではなく**対象期間の終端**（History を時系列に保つため）。
+    """
+    return Snapshot(
+        filename=filename,
+        saved_at=to_utc_naive(end_local),
+        triggered_by=TRIGGERED_BY,
+        site_count=site_count,
+        ap_count=record_count,
+    )
+
+
+def _existing_snapshot_filenames(Session_: sessionmaker) -> set[str]:
+    """登録済みのファイル名を最初に 1 回だけ読む（バケットごとに問い合わせない）。"""
     db: Session = Session_()
     try:
-        if db.query(Snapshot).filter_by(filename=filename).first():
-            return False
-        db.add(Snapshot(
-            filename=filename,
-            saved_at=saved_at,
-            triggered_by=TRIGGERED_BY,
-            site_count=site_count,
-            ap_count=record_count,
-        ))
+        return {name for (name,) in db.query(Snapshot.filename).all()}
+    finally:
+        db.close()
+
+
+def _register_snapshots(Session_: sessionmaker, pending: list[Snapshot]) -> int:
+    """History 画面に出すため ``snapshots`` にまとめて登録する。
+
+    **読み取り側の接続を閉じてから、1 トランザクションで書く。** バケットごとに
+    commit していたときは、読み取り接続がロックを掴んだままだったため
+    1 件目の commit で ``database is locked`` になっていた。
+    """
+    if not pending:
+        return 0
+    db: Session = Session_()
+    try:
+        # 別プロセスが同時に登録した場合に備え、書き込み直前にもう一度確かめる
+        known = {name for (name,) in db.query(Snapshot.filename).all()}
+        fresh = [s for s in pending if s.filename not in known]
+        db.add_all(fresh)
         db.commit()
-        return True
+        return len(fresh)
     except Exception:
         db.rollback()
         raise
@@ -400,41 +480,66 @@ def backfill(
         if write:
             _check_snapshot_db(SnapshotSession)
             os.makedirs(logs_dir, exist_ok=True)
+        registered = _existing_snapshot_filenames(SnapshotSession)
 
         _print_header(result, write, start_local, end_local, out)
 
-        for end_local_bucket, rows in _iter_buckets(session, tz, start_utc, end_utc):
-            filename = bucket_filename(end_local_bucket)
-            path = os.path.join(logs_dir, filename)
-            sites = len({r.site_id for r in rows})
-            plan = BucketPlan(
-                filename=filename, end_local=end_local_bucket,
-                rows=len(rows), sites=sites,
-            )
+        # snapshots へ書くのはループの外（読み取り接続を閉じてから 1 トランザクション）
+        pending: list[Snapshot] = []
 
-            if os.path.exists(path):
-                plan.skipped = True
-                result.skipped.append(plan)
-                print(f"  = {filename}  rows={len(rows)}  (既存のためスキップ)", file=out)
+        for lo, hi in _bucket_bounds(session, tz, start_utc, end_utc):
+            rows = _load_bucket(session, lo, hi, start_utc, end_utc)
+            if not rows:
                 continue
 
+            end_local_bucket = to_local(hi, tz)
+            filename = bucket_filename(end_local_bucket)
+            path = os.path.join(logs_dir, filename)
+            exists = os.path.exists(path)
+
+            if exists and filename in registered:
+                result.skipped.append(BucketPlan(
+                    filename=filename, end_local=end_local_bucket,
+                    rows=len(rows), sites=len({r.site_id for r in rows}),
+                ))
+                print(f"  = {filename}  rows={len(rows)}  (既存・登録済みのためスキップ)", file=out)
+                continue
+
+            if exists:
+                # 前回の実行が登録前に落ちた等で残った孤児ファイル。
+                # 中身は書き直さず、登録だけ行う（件数はファイルの実物から数える）
+                rows_in_file, sites_in_file = _count_csv(path)
+                result.adopted.append(BucketPlan(
+                    filename=filename, end_local=end_local_bucket,
+                    rows=rows_in_file, sites=sites_in_file,
+                ))
+                print(
+                    f"  ~ {filename}  rows={rows_in_file}  "
+                    "(既存ファイルを snapshots に登録)", file=out
+                )
+                if write:
+                    pending.append(_snapshot_for(
+                        filename, end_local_bucket, sites_in_file, rows_in_file
+                    ))
+                continue
+
+            sites = len({r.site_id for r in rows})
             if write:
-                # 自動保存と同じ並び（サイト → AP → 時刻）
-                rows.sort(key=lambda r: (r.site_id or "", r.ap_id or "", r.timestamp))
                 _write_bucket(path, rows, site_names, tz_str)
-                # saved_at は実行時刻ではなく対象期間の時刻（History を時系列に保つ）
-                if _register_snapshot(
-                    SnapshotSession, filename, to_utc_naive(end_local_bucket),
-                    sites, len(rows),
-                ):
-                    result.snapshots_added += 1
-            result.written.append(plan)
+                pending.append(_snapshot_for(filename, end_local_bucket, sites, len(rows)))
+            result.written.append(BucketPlan(
+                filename=filename, end_local=end_local_bucket, rows=len(rows), sites=sites,
+            ))
             print(f"  {'+' if write else '-'} {filename}  rows={len(rows)}  sites={sites}", file=out)
 
-        _print_summary(result, write, out)
-        return result
     finally:
+        # snapshots へ書く前に、読み取り側の接続を必ず手放す
         session.close()
+
+    if write:
+        result.snapshots_added = _register_snapshots(SnapshotSession, pending)
+    _print_summary(result, write, out)
+    return result
 
 
 def _print_header(
@@ -460,7 +565,8 @@ def _print_summary(result: BackfillResult, write: bool, out) -> None:
     verb = "書き出した" if write else "書き出す予定"
     print(
         f"  files     : {len(result.written)} {verb} / "
-        f"{len(result.skipped)} スキップ（既存）", file=out
+        f"{len(result.adopted)} 既存ファイルを登録 / "
+        f"{len(result.skipped)} スキップ（既存・登録済み）", file=out
     )
     print(
         f"  rows      : {result.rows_written} / スキップ分 {result.rows_skipped}", file=out

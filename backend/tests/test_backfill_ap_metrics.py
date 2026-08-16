@@ -252,20 +252,104 @@ def test_null_coordinates_are_written_as_empty_cells(env):
 
 
 # ---------------------------------------------------------------------------
-# 要件 5 / 6: 既存ファイルのスキップと冪等性
+# 要件 5 / 6: 既存ファイルの扱い（3 分岐）と冪等性
+#   ファイルあり + 登録済み → スキップ
+#   ファイルあり + 未登録   → ファイルは書き直さず登録だけ
+#   ファイルなし            → 書き出し + 登録
 # ---------------------------------------------------------------------------
 
+BUCKET_FILE = "ap_metrics_20260809_1300_JST.csv"
 
-def test_existing_file_is_never_overwritten(env):
-    tmp_path, logs_dir, _ = env
-    path = logs_dir / "ap_metrics_20260809_1300_JST.csv"
-    path.write_text("既存ファイルの中身", encoding="utf-8")
+
+def _place_existing_csv(logs_dir, *, name: str = BUCKET_FILE, rows: int = 2) -> str:
+    """「既にそこにあるファイル」として、中身の分かる正規の CSV を置く。"""
+    path = logs_dir / name
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=ALL_CSV_COLUMNS)
+        writer.writeheader()
+        for i in range(rows):
+            writer.writerow({
+                **{c: "" for c in ALL_CSV_COLUMNS},
+                "timestamp": "2026-08-09 12:00:00",
+                "site_id": f"existing-site-{i:04d}",
+                "ap_id": "existing-ap-0001",
+            })
+    return path.read_text(encoding="utf-8")
+
+
+def _add_snapshot(LiveSession, filename: str, triggered_by: str = "auto") -> None:
+    db = LiveSession()
+    try:
+        db.add(Snapshot(filename=filename, saved_at=datetime(2026, 8, 9, 4, 0),
+                        triggered_by=triggered_by, site_count=1, ap_count=1))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_existing_file_with_snapshot_is_skipped(env):
+    """ファイルあり + 登録済み → 何もしない。"""
+    tmp_path, logs_dir, LiveSession = env
+    before = _place_existing_csv(logs_dir)
+    _add_snapshot(LiveSession, BUCKET_FILE)
 
     result = _run(env, [_metric(BASE_UTC)])
 
-    assert path.read_text(encoding="utf-8") == "既存ファイルの中身"
-    assert [b.filename for b in result.skipped] == [path.name]
-    assert result.written == []
+    assert (logs_dir / BUCKET_FILE).read_text(encoding="utf-8") == before
+    assert [b.filename for b in result.skipped] == [BUCKET_FILE]
+    assert result.written == [] and result.adopted == []
+    assert result.snapshots_added == 0
+    assert [(s.filename, s.triggered_by) for s in _snapshots(LiveSession)] == [
+        (BUCKET_FILE, "auto")
+    ]
+
+
+def test_orphan_file_is_registered_without_being_rewritten(env):
+    """ファイルあり + 未登録 → ファイルは触らず、登録だけ行う。
+
+    前回の実行が登録前に落ちたときに、再実行で救えるようにするための分岐。
+    """
+    tmp_path, logs_dir, LiveSession = env
+    before = _place_existing_csv(logs_dir, rows=2)
+
+    result = _run(env, [_metric(BASE_UTC)])
+
+    assert (logs_dir / BUCKET_FILE).read_text(encoding="utf-8") == before
+    assert [b.filename for b in result.adopted] == [BUCKET_FILE]
+    assert result.written == [] and result.skipped == []
+    assert result.snapshots_added == 1
+
+    snap = _snapshots(LiveSession)[0]
+    assert snap.triggered_by == "restore"
+    # saved_at は対象期間の終端（JST 13:00 = UTC 04:00）
+    assert snap.saved_at == datetime(2026, 8, 9, 4, 0)
+    # 件数は DB の行数ではなく、ファイルの実物から数える
+    assert (snap.site_count, snap.ap_count) == (2, 2)
+
+
+def test_orphan_file_is_not_registered_in_dry_run(env):
+    tmp_path, logs_dir, LiveSession = env
+    before = _place_existing_csv(logs_dir)
+
+    result = _run(env, [_metric(BASE_UTC)], write=False)
+
+    assert (logs_dir / BUCKET_FILE).read_text(encoding="utf-8") == before
+    assert [b.filename for b in result.adopted] == [BUCKET_FILE]
+    assert _snapshots(LiveSession) == []
+
+
+def test_orphan_adoption_is_idempotent(env):
+    """孤児を救った後にもう一度実行しても、登録が重複しない。"""
+    tmp_path, logs_dir, LiveSession = env
+    _place_existing_csv(logs_dir)
+
+    first = _run(env, [_metric(BASE_UTC)])
+    second = _run(env, [_metric(BASE_UTC)])
+
+    assert first.snapshots_added == 1
+    assert second.snapshots_added == 0
+    assert [b.filename for b in second.skipped] == [BUCKET_FILE]
+    assert len(_snapshots(LiveSession)) == 1
 
 
 def test_second_run_adds_no_duplicate_files_or_snapshots(env):
@@ -464,6 +548,108 @@ def test_missing_db_file_is_an_input_error(env):
         "--db", str(tmp_path / "does-not-exist.db"), "--logs-dir", str(logs_dir),
     ])
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# database is locked の再発防止
+#
+# 本番（50 万行）で --write が 1 ファイル目の commit で必ず落ちた。原因は
+# 読み取りを yield_per で流したままファイル書き出し・snapshots 登録へ進んでいたこと。
+# pysqlite は SELECT を遅延実行するため SHARED ロックを掴んだままになり、
+# 同じ DB ファイルへの書き込みが弾かれる。行数が少ないと SELECT が読み切れてしまい
+# 再現しないので、ここでは**バッファ（yield_per=2000）を超える行数**を用意する。
+# ---------------------------------------------------------------------------
+
+#: 読み取りが 1 回のフェッチで終わらない行数（旧実装のロックを再現するのに必要）
+_ROWS_BEYOND_BUFFER = 2700
+
+
+def _many_rows() -> list[dict]:
+    """3 バケットにまたがる、バッファを超える行数の合成データ。"""
+    rows = []
+    for i in range(_ROWS_BEYOND_BUFFER):
+        # 3 秒間隔 → 2700 行で 2 時間 15 分ぶん（12 時台・13 時台・14 時台の 3 バケット）
+        rows.append(_metric(BASE_UTC + timedelta(seconds=3 * i), ap=f"{i % 250:04d}"))
+    return rows
+
+
+def test_write_succeeds_when_source_and_snapshot_are_the_same_db_file(env):
+    """本番と同じ構成（読み書きが同一ファイル・大きめの行数）で最後まで通ること。"""
+    tmp_path, logs_dir, _ = env
+    same = tmp_path / "same-file.db"
+    _make_db(same, _many_rows())
+
+    result = backfill.backfill(
+        db_path=str(same), logs_dir=str(logs_dir),
+        snapshot_db_path=str(same), write=True,
+    )
+
+    assert result.rows_written == _ROWS_BEYOND_BUFFER
+    assert len(result.written) == 3
+    assert result.snapshots_added == 3
+
+    OtherSession = sessionmaker(bind=create_engine(f"sqlite:///{same}"))
+    db = OtherSession()
+    try:
+        assert db.query(Snapshot).count() == 3
+    finally:
+        db.close()
+
+
+def test_no_read_connection_is_open_while_snapshots_are_written(env, monkeypatch):
+    """snapshots を書く時点で、読み取り側の接続が 1 本も残っていないこと。
+
+    これが崩れると同一ファイル構成で database is locked に戻る。
+    """
+    tmp_path, logs_dir, _ = env
+    src = tmp_path / "big.db"
+    _make_db(src, _many_rows())
+
+    source_engines = []
+    real_open = backfill.open_source_db
+
+    def spy_open(path):
+        maker = real_open(path)
+        source_engines.append(maker.kw["bind"])
+        return maker
+
+    observed = []
+    real_register = backfill._register_snapshots
+
+    def spy_register(Session_, pending):
+        observed.append([e.pool.checkedout() for e in source_engines])
+        return real_register(Session_, pending)
+
+    monkeypatch.setattr(backfill, "open_source_db", spy_open)
+    monkeypatch.setattr(backfill, "_register_snapshots", spy_register)
+
+    backfill.backfill(db_path=str(src), logs_dir=str(logs_dir), write=True)
+
+    assert observed, "_register_snapshots が呼ばれていない"
+    assert source_engines, "読み取り用エンジンが捕捉できていない"
+    assert observed[0] == [0] * len(source_engines), (
+        f"snapshots 書き込み時に読み取り接続が開いている: {observed[0]}"
+    )
+
+
+def test_snapshots_are_committed_once_not_per_file(env, monkeypatch):
+    """ファイル数ぶん commit しない（148 ファイルで 148 トランザクションにしない）。"""
+    tmp_path, logs_dir, _ = env
+    src = tmp_path / "many.db"
+    _make_db(src, _many_rows())
+
+    calls = []
+    real_register = backfill._register_snapshots
+
+    def spy_register(Session_, pending):
+        calls.append(len(pending))
+        return real_register(Session_, pending)
+
+    monkeypatch.setattr(backfill, "_register_snapshots", spy_register)
+    result = backfill.backfill(db_path=str(src), logs_dir=str(logs_dir), write=True)
+
+    assert len(result.written) == 3
+    assert calls == [3]  # 3 ファイルぶんを 1 回でまとめて登録
 
 
 # ---------------------------------------------------------------------------
