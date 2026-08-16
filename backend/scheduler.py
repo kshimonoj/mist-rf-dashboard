@@ -45,10 +45,35 @@ def _persist_last_log_saved_at(dt: datetime) -> None:
         db.close()
 
 LOGS_DIR = "/app/data/logs"
-_MAX_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB
-# サイズキャップ超過時でも、直近 N 件の ap_metrics スナップショットは削除しない
-# （全滅させてダッシュボードが直近データを失うのを防ぐフロア）
-_MIN_KEEP_SNAPSHOTS = 10
+
+# --- ログローテートの設定 -------------------------------------------------
+# 既定では 1 件も削除しない（dry-run）。運用者がログで削除予定を確認し、
+# 明示的に LOG_ROTATE_DRY_RUN=0 を設定して初めて実削除が始まる。
+ENV_ROTATE_DRY_RUN = "LOG_ROTATE_DRY_RUN"
+ENV_LOG_MAX_TOTAL_MB = "LOG_MAX_TOTAL_MB"
+DEFAULT_ROTATE_DRY_RUN = True
+# 実環境の実使用量（約 526MB / 増加率 約 25MB/日）より十分大きい既定値。
+# デプロイした瞬間に既存ログが削除される事態を避けるため、旧値 500MiB には戻さないこと。
+DEFAULT_LOG_MAX_TOTAL_MB = 5000
+
+# 種別ごとに、直近 N 件は年齢・サイズどちらの基準でも削除しない
+# （ダッシュボードが直近データを失うのを防ぐフロア）。
+# 旧 _MIN_KEEP_SNAPSHOTS（ap_metrics 限定）を全種別へ一般化したもの。
+_MIN_KEEP_PER_KIND = 10
+
+# data/logs 直下に置かれるログの種別（ファイル名の接頭辞）。
+# ap_events_backfill_* は ap_events_ で拾えるので個別の項目は不要。
+_LOG_KIND_PREFIXES = (
+    "ap_metrics_",
+    "sle_metrics_",
+    "client_metrics_",
+    "floormap_",
+    "ap_events_",
+    "rf_neighbors_",
+)
+_OTHER_KIND = "other"
+# Snapshot テーブルに登録されるのは ap_metrics の CSV だけ
+_SNAPSHOT_KIND = "ap_metrics"
 
 SLE_CSV_COLUMNS = [
     "timestamp", "site_id", "site_name", "ap_id", "ap_name",
@@ -206,76 +231,240 @@ def _detect_and_record_changes(
             ))
 
 
+def _env_flag(key: str, default: bool) -> bool:
+    """環境変数を真偽値として読む。読めない値は既定値にフォールバックする。"""
+    raw = os.getenv(key)
+    if raw is None or raw.strip() == "":
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    logger.warning(f"[ROTATE] {key}={raw!r} を真偽値として読めません。既定値 {default} を使います")
+    return default
+
+
+def _rotate_dry_run() -> bool:
+    """削除せず「削除予定」をログに出すだけのモードか（既定: 有効）。"""
+    return _env_flag(ENV_ROTATE_DRY_RUN, DEFAULT_ROTATE_DRY_RUN)
+
+
+def _log_max_total_bytes() -> int:
+    """data/logs 直下の合計サイズ上限（環境変数で上書き可能）。"""
+    raw = os.getenv(ENV_LOG_MAX_TOTAL_MB)
+    limit_mb = float(DEFAULT_LOG_MAX_TOTAL_MB)
+    if raw is not None and raw.strip() != "":
+        try:
+            parsed = float(raw)
+        except ValueError:
+            logger.warning(
+                f"[ROTATE] {ENV_LOG_MAX_TOTAL_MB}={raw!r} を数値として読めません。"
+                f"既定値 {DEFAULT_LOG_MAX_TOTAL_MB} を使います"
+            )
+        else:
+            if parsed > 0:
+                limit_mb = parsed
+            else:
+                logger.warning(
+                    f"[ROTATE] {ENV_LOG_MAX_TOTAL_MB}={raw!r} は 0 より大きい値が必要です。"
+                    f"既定値 {DEFAULT_LOG_MAX_TOTAL_MB} を使います"
+                )
+    return int(limit_mb * 1024 * 1024)
+
+
+def _log_kind(filename: str) -> str:
+    """ファイル名から種別を返す。どれにも当てはまらなければ ``other``。"""
+    for prefix in _LOG_KIND_PREFIXES:
+        if filename.startswith(prefix):
+            return prefix.rstrip("_")
+    return _OTHER_KIND
+
+
+def _list_log_files() -> list[tuple[str, int, float]]:
+    """``LOGS_DIR`` 直下のファイルを ``(filename, size, mtime)`` で mtime 昇順に返す。
+
+    サブディレクトリには**再帰しない**（``data/hangap_results/`` は指示 15 で
+    独自のローテートを持つため、ここでは一切触らない）。
+    """
+    entries: list[tuple[str, int, float]] = []
+    try:
+        with os.scandir(LOGS_DIR) as it:
+            for entry in it:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                try:
+                    stat = entry.stat()
+                except OSError:
+                    continue
+                entries.append((entry.name, stat.st_size, stat.st_mtime))
+    except OSError as e:
+        logger.error(f"[ROTATE] Failed to scan {LOGS_DIR}: {e}")
+        return []
+    entries.sort(key=lambda t: (t[2], t[0]))
+    return entries
+
+
+def _plan_rotation(
+    entries: list[tuple[str, int, float]],
+    cutoff_ts: float,
+    max_total_bytes: int,
+) -> tuple[list[tuple[str, int, float]], list[tuple[str, int, float]], int]:
+    """削除計画を立てる。
+
+    :returns: ``(年齢基準の対象, サイズキャップの対象, 削除後の合計サイズ)``
+
+    - 判定対象と削除対象は同じ（``LOGS_DIR`` 直下の全ファイル）。旧実装の
+      「合計は全ファイル・削除は ap_metrics だけ」という食い違いを作らない。
+    - 種別ごとに直近 :data:`_MIN_KEEP_PER_KIND` 件は候補から外す。
+    """
+    protected: set[str] = set()
+    by_kind: dict[str, list[str]] = {}
+    for name, _size, _mtime in entries:  # mtime 昇順
+        by_kind.setdefault(_log_kind(name), []).append(name)
+    for names in by_kind.values():
+        protected.update(names[-_MIN_KEEP_PER_KIND:])
+
+    total = sum(size for _n, size, _m in entries)
+    candidates = [e for e in entries if e[0] not in protected]
+
+    age_targets = [e for e in candidates if e[2] < cutoff_ts]
+    total -= sum(size for _n, size, _m in age_targets)
+
+    aged = {e[0] for e in age_targets}
+    cap_targets: list[tuple[str, int, float]] = []
+    if total > max_total_bytes:
+        for entry in candidates:
+            if total <= max_total_bytes:
+                break
+            if entry[0] in aged:
+                continue
+            cap_targets.append(entry)
+            total -= entry[1]
+
+    return age_targets, cap_targets, total
+
+
 def rotate_logs(retention_days: int) -> None:
-    """古いログを日数基準と500MBキャップで削除する"""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    """``data/logs`` 直下のログを、日数基準と合計サイズ上限で削除する。
+
+    **判定対象と削除対象を必ず一致させること。** 旧実装は「合計サイズは
+    ``data/logs`` の全ファイル、削除できるのは ``Snapshot`` に載る ap_metrics だけ」
+    という食い違いを持っており、他種別が容量を占めた状態でキャップを 2MB 超えた
+    だけで ap_metrics が全滅した。ここではファイルシステムだけで判定と削除を完結
+    させ、``Snapshot`` には依存しない（``Snapshot`` 行が無いファイルも対象）。
+
+    - 対象は ``LOGS_DIR`` 直下のファイルのみ。サブディレクトリには再帰しない。
+    - 削除順は mtime 昇順（古いものから）。
+    - 種別ごとに直近 :data:`_MIN_KEEP_PER_KIND` 件は残す（最低でも各種別 1 件）。
+    - 既定は dry-run。実削除には ``LOG_ROTATE_DRY_RUN=0`` が必要。
+    """
+    if not os.path.isdir(LOGS_DIR):
+        return
+
+    dry_run = _rotate_dry_run()
+    max_total_bytes = _log_max_total_bytes()
+    cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=retention_days)).timestamp()
+
+    entries = _list_log_files()
+    age_targets, cap_targets, remaining = _plan_rotation(entries, cutoff_ts, max_total_bytes)
+    targets = sorted(age_targets + cap_targets, key=lambda t: (t[2], t[0]))
+
+    total_before = sum(size for _n, size, _m in entries)
+    if not targets:
+        logger.info(
+            f"[ROTATE] nothing to delete "
+            f"(files={len(entries)} total={_mb(total_before)} cap={_mb(max_total_bytes)} "
+            f"retention={retention_days}d dry_run={int(dry_run)})"
+        )
+        _warn_if_cap_remains(remaining, max_total_bytes)
+        return
+
+    def _summary(prefix: str, verb: str, done: list[tuple[str, int, float]], by_age: int) -> str:
+        return (
+            f"{prefix} {verb} {len(done)} files / {_mb(sum(s for _n, s, _m in done))} "
+            f"(age>{retention_days}d: {by_age}, size cap: {len(done) - by_age})\n"
+            f"{' ' * len(prefix)} oldest: {done[0][0]} ... newest: {done[-1][0]}"
+        )
+
+    if dry_run:
+        logger.info(_summary("[ROTATE][DRY-RUN]", "would delete", targets, len(age_targets)))
+        logger.info(
+            f"[ROTATE][DRY-RUN] no file was deleted. "
+            f"Set {ENV_ROTATE_DRY_RUN}=0 to enable actual deletion."
+        )
+        _warn_if_cap_remains(remaining, max_total_bytes)
+        return
+
+    aged = {e[0] for e in age_targets}
+    deleted: list[tuple[str, int, float]] = []
+    for entry in targets:
+        path = os.path.join(LOGS_DIR, entry[0])
+        try:
+            os.remove(path)
+        except OSError as e:
+            logger.error(f"[ROTATE] Failed to delete {entry[0]}: {e}")
+            continue
+        deleted.append(entry)
+
+    _delete_snapshot_rows([name for name, _s, _m in deleted])
+
+    if not deleted:
+        return
+    logger.info(
+        _summary("[ROTATE]", "deleted", deleted, sum(1 for e in deleted if e[0] in aged))
+    )
+    # 削除に失敗した分は残っているので、実測値で判定する
+    _warn_if_cap_remains(
+        total_before - sum(size for _n, size, _m in deleted), max_total_bytes
+    )
+
+
+def _mb(num_bytes: int) -> str:
+    return f"{num_bytes / 1024 / 1024:.1f}MB"
+
+
+def _warn_if_cap_remains(remaining: int, max_total_bytes: int) -> None:
+    """消せる分を消してもキャップを下回れないときだけ警告する。
+
+    旧実装（応急処置 A）の「候補を全部消しても下回れないなら 1 件も削除しない」
+    ガードはここでは持たない。削除対象が全ファイルになった今、削除を丸ごと見送ると
+    サイズキャップが恒久的に無効化されるだけで、超過は解消しないため。残るのは
+    種別ごとのフロア（直近 _MIN_KEEP_PER_KIND 件）だけなので、旧障害のように
+    ある種別が全滅することはない。
+    """
+    if remaining <= max_total_bytes:
+        return
+    logger.warning(
+        f"[ROTATE] Size cap still exceeded after rotation: "
+        f"total={remaining}B cap={max_total_bytes}B. "
+        f"The remaining files are the per-kind floor "
+        f"(newest {_MIN_KEEP_PER_KIND} of each kind) and are never deleted. "
+        f"Consider raising {ENV_LOG_MAX_TOTAL_MB}."
+    )
+
+
+def _delete_snapshot_rows(filenames: list[str]) -> None:
+    """削除したファイルに対応する ``Snapshot`` 行を消す。
+
+    行だけ残ると一覧に「ダウンロードできない項目」が並ぶ。逆に行が無いファイルも
+    削除対象にする（判定と削除の対象を一致させるため）ので、ここは後始末に徹する。
+    """
+    names = [f for f in filenames if _log_kind(f) == _SNAPSHOT_KIND]
+    if not names:
+        return
     db: Session = SessionLocal()
     try:
-        old_snaps = db.query(Snapshot).filter(Snapshot.saved_at < cutoff).all()
-        for snap in old_snaps:
-            path = os.path.join(LOGS_DIR, snap.filename)
-            if os.path.isfile(path):
-                os.remove(path)
-                logger.info(f"[ROTATE] Deleted (age): {snap.filename}")
-            db.delete(snap)
-        if old_snaps:
-            db.commit()
-
-        if not os.path.isdir(LOGS_DIR):
-            return
-        total = sum(
-            os.path.getsize(os.path.join(LOGS_DIR, f))
-            for f in os.listdir(LOGS_DIR)
-            if os.path.isfile(os.path.join(LOGS_DIR, f))
+        removed = (
+            db.query(Snapshot)
+            .filter(Snapshot.filename.in_(names))
+            .delete(synchronize_session=False)
         )
-        if total <= _MAX_TOTAL_BYTES:
-            return
-
-        # 削除候補は ap_metrics（Snapshotに登録されるCSV）のみ。data/logs には
-        # 他種別のCSV（client_metrics 等）も溜まるが、Snapshot に登録されないため
-        # ここでは削除対象にできない（他種別を含めた根治は別途対応）。
-        # 直近 _MIN_KEEP_SNAPSHOTS 件は常に保持し、削除候補から除外する。
-        all_snaps = db.query(Snapshot).order_by(Snapshot.saved_at.asc()).all()
-        if len(all_snaps) > _MIN_KEEP_SNAPSHOTS:
-            candidates = all_snaps[: len(all_snaps) - _MIN_KEEP_SNAPSHOTS]
-        else:
-            candidates = []
-
-        deletable_bytes = sum(
-            os.path.getsize(os.path.join(LOGS_DIR, snap.filename))
-            for snap in candidates
-            if os.path.isfile(os.path.join(LOGS_DIR, snap.filename))
-        )
-        if total - deletable_bytes > _MAX_TOTAL_BYTES:
-            # ap_metrics を候補分すべて削除してもキャップを下回れない
-            # = data/logs の容量は他種別のファイルに占められている。
-            # 中途半端に ap_metrics を全滅させるより、何もせず運用者に知らせる方が
-            # 安全なので削除を見送る。
-            # 注意: この状態が続く限りサイズキャップは実質的に無効化される
-            # （このジョブは毎回 0 件削除で終わる）。他種別を含めた根治対応(B)が
-            # 別途必要。
-            logger.warning(
-                f"[ROTATE] Size cap exceeded but not enforceable via ap_metrics alone: "
-                f"total={total}B cap={_MAX_TOTAL_BYTES}B "
-                f"deletable_ap_metrics={len(candidates)}files/{deletable_bytes}B "
-                f"(deleting all of them would still leave {total - deletable_bytes}B > cap). "
-                f"Non-ap_metrics files are likely dominating {LOGS_DIR}. "
-                f"Skipping deletion this run — size cap is NOT being enforced."
-            )
-            return
-
-        for snap in candidates:
-            if total <= _MAX_TOTAL_BYTES:
-                break
-            path = os.path.join(LOGS_DIR, snap.filename)
-            if os.path.isfile(path):
-                total -= os.path.getsize(path)
-                os.remove(path)
-                logger.info(f"[ROTATE] Deleted (size cap): {snap.filename}")
-            db.delete(snap)
         db.commit()
+        if removed:
+            logger.info(f"[ROTATE] Removed {removed} snapshot row(s) for deleted files")
     except Exception as e:
-        logger.error(f"[ROTATE] Failed: {e}")
+        logger.error(f"[ROTATE] Failed to remove snapshot rows: {e}")
         db.rollback()
     finally:
         db.close()

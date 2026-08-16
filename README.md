@@ -391,6 +391,25 @@ data/
 └── snapshots/        # Snapshot database files (max 2 slots)
 ```
 
+### CSV log rotation (`data/logs/`)
+
+Rotation runs after each auto-save job and works purely on the filesystem: the files it counts are
+exactly the files it can delete — every file **directly under** `data/logs/` (subdirectories such as
+`data/hangap_results/` are never scanned or touched). Files go oldest-first by mtime, by age first
+and then by size cap, and the newest `10` files of every kind (`ap_metrics`, `sle_metrics`,
+`client_metrics`, `floormap`, `ap_events`, `rf_neighbors`) are never removed. Deleting an
+`ap_metrics` file also removes its `Snapshot` row, and files with no `Snapshot` row are rotated too.
+
+**Deletion is disabled by default.** The job logs what it *would* delete and stops there; review
+those `[ROTATE][DRY-RUN]` lines before enabling it.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LOG_ROTATE_DRY_RUN` | `1` | `1` = log the deletion plan only. Set to `0` to actually delete |
+| `LOG_MAX_TOTAL_MB` | `5000` | Total size cap for files directly under `data/logs/` |
+
+The retention period comes from **log retention** in the Settings GUI (default 30 days).
+
 ## Security Notes
 
 - `.env` is excluded from git via `.gitignore` — **do not commit it**

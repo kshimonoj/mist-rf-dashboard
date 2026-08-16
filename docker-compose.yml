@@ -12,6 +12,10 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3007}
       - HANGAP_RESULTS_MAX_FILES=${HANGAP_RESULTS_MAX_FILES:-50}
       - HANGAP_RESULTS_MAX_TOTAL_MB=${HANGAP_RESULTS_MAX_TOTAL_MB:-500}
+      # data/logs のローテート。既定は dry-run（1件も削除せず、削除予定をログに出すだけ）。
+      # ログを確認したうえで LOG_ROTATE_DRY_RUN=0 にして初めて実削除が始まる。
+      - LOG_ROTATE_DRY_RUN=${LOG_ROTATE_DRY_RUN:-1}
+      - LOG_MAX_TOTAL_MB=${LOG_MAX_TOTAL_MB:-5000}
     volumes:
       - ./data:/app/data
     restart: unless-stopped
