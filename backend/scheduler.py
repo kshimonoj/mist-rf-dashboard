@@ -110,6 +110,53 @@ ALL_CSV_COLUMNS = [
 ]
 
 
+def ap_metrics_csv_row(r: ApMetrics, site_name: str, tz_str: str) -> dict:
+    """``ApMetrics`` 1 行を ``ALL_CSV_COLUMNS`` の dict に変換する。
+
+    DB は UTC 保存・CSV は現地時刻（``tz_str``）で書く、という変換の単一の置き場所。
+    自動保存（``save_hourly_logs``）と DB からの再生成（``backfill.ap_metrics``）で
+    列構成・書式がずれないよう、両方からこの関数を使う。
+    """
+    return {
+        "timestamp": fmt_dt_tz(r.timestamp, tz_str),
+        "site_id": r.site_id,
+        "site_name": site_name,
+        "ap_id": r.ap_id,
+        "ap_name": r.ap_name,
+        "model": r.model or "",
+        "mac": r.mac,
+        "status": r.status,
+        "num_clients": r.num_clients,
+        "radio_24_channel": r.radio_24_channel,
+        "radio_24_bandwidth": r.radio_24_bandwidth,
+        "radio_24_tx_power": r.radio_24_tx_power,
+        "radio_24_utilization": r.radio_24_utilization,
+        "radio_24_util_tx": r.radio_24_util_tx,
+        "radio_24_util_rx_in_bss": r.radio_24_util_rx_in_bss,
+        "radio_24_util_non_wifi": r.radio_24_util_non_wifi,
+        "radio_24_noise_floor": r.radio_24_noise_floor,
+        "radio_5_channel": r.radio_5_channel,
+        "radio_5_bandwidth": r.radio_5_bandwidth,
+        "radio_5_tx_power": r.radio_5_tx_power,
+        "radio_5_utilization": r.radio_5_utilization,
+        "radio_5_util_tx": r.radio_5_util_tx,
+        "radio_5_util_rx_in_bss": r.radio_5_util_rx_in_bss,
+        "radio_5_util_non_wifi": r.radio_5_util_non_wifi,
+        "radio_5_noise_floor": r.radio_5_noise_floor,
+        "radio_6_channel": r.radio_6_channel,
+        "radio_6_bandwidth": r.radio_6_bandwidth,
+        "radio_6_tx_power": r.radio_6_tx_power,
+        "radio_6_utilization": r.radio_6_utilization,
+        "radio_6_util_tx": r.radio_6_util_tx,
+        "radio_6_util_rx_in_bss": r.radio_6_util_rx_in_bss,
+        "radio_6_util_non_wifi": r.radio_6_util_non_wifi,
+        "radio_6_noise_floor": r.radio_6_noise_floor,
+        "map_id": r.map_id,
+        "x_m": r.x_m,
+        "y_m": r.y_m,
+    }
+
+
 CLIENT_FIELDS = [
     "mac", "hostname", "ip", "manufacture", "family", "model", "os",
     "band", "channel", "proto", "ssid", "bssid", "rssi", "snr",
@@ -1327,44 +1374,9 @@ async def save_hourly_logs():
                 writer = csv.DictWriter(f, fieldnames=ALL_CSV_COLUMNS, extrasaction="ignore")
                 writer.writeheader()
                 for r in rows:
-                    writer.writerow({
-                        "timestamp": fmt_dt_tz(r.timestamp, _app_timezone),
-                        "site_id": r.site_id,
-                        "site_name": site_names.get(r.site_id, ""),
-                        "ap_id": r.ap_id,
-                        "ap_name": r.ap_name,
-                        "model": r.model or "",
-                        "mac": r.mac,
-                        "status": r.status,
-                        "num_clients": r.num_clients,
-                        "radio_24_channel": r.radio_24_channel,
-                        "radio_24_bandwidth": r.radio_24_bandwidth,
-                        "radio_24_tx_power": r.radio_24_tx_power,
-                        "radio_24_utilization": r.radio_24_utilization,
-                        "radio_24_util_tx": r.radio_24_util_tx,
-                        "radio_24_util_rx_in_bss": r.radio_24_util_rx_in_bss,
-                        "radio_24_util_non_wifi": r.radio_24_util_non_wifi,
-                        "radio_24_noise_floor": r.radio_24_noise_floor,
-                        "radio_5_channel": r.radio_5_channel,
-                        "radio_5_bandwidth": r.radio_5_bandwidth,
-                        "radio_5_tx_power": r.radio_5_tx_power,
-                        "radio_5_utilization": r.radio_5_utilization,
-                        "radio_5_util_tx": r.radio_5_util_tx,
-                        "radio_5_util_rx_in_bss": r.radio_5_util_rx_in_bss,
-                        "radio_5_util_non_wifi": r.radio_5_util_non_wifi,
-                        "radio_5_noise_floor": r.radio_5_noise_floor,
-                        "radio_6_channel": r.radio_6_channel,
-                        "radio_6_bandwidth": r.radio_6_bandwidth,
-                        "radio_6_tx_power": r.radio_6_tx_power,
-                        "radio_6_utilization": r.radio_6_utilization,
-                        "radio_6_util_tx": r.radio_6_util_tx,
-                        "radio_6_util_rx_in_bss": r.radio_6_util_rx_in_bss,
-                        "radio_6_util_non_wifi": r.radio_6_util_non_wifi,
-                        "radio_6_noise_floor": r.radio_6_noise_floor,
-                        "map_id": r.map_id,
-                        "x_m": r.x_m,
-                        "y_m": r.y_m,
-                    })
+                    writer.writerow(ap_metrics_csv_row(
+                        r, site_names.get(r.site_id, ""), _app_timezone
+                    ))
 
             site_count = len({r.site_id for r in rows})
             record_count = len(rows)
