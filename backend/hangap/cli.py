@@ -21,9 +21,6 @@ EXIT_OK = 0
 EXIT_INPUT_ERROR = 1
 EXIT_OUTPUT_ERROR = 2
 
-_DATA_SUFFIXES = analysis.DATA_SUFFIXES
-
-
 class CliError(RuntimeError):
     """入力エラー（終了コード 1）。"""
 
@@ -111,9 +108,11 @@ def build_parser() -> _ArgumentParser:
 
 
 def _resolve_one(raw: str) -> list[Path]:
+    # 走査対象の判定は loader.is_data_file に委ねる（hangap 自身の出力を置く
+    # hangap_results 配下を、ここと loader で別々に除外しないため）。
     p = Path(raw)
     if p.is_dir():
-        found = [f for f in sorted(p.rglob("*")) if f.is_file() and f.suffix.lower() in _DATA_SUFFIXES]
+        found = [f for f in sorted(p.rglob("*")) if f.is_file() and loader.is_data_file(f)]
         if not found:
             raise CliError(f"ディレクトリに CSV/XLSX が見つかりません: {raw}")
         return found
@@ -127,7 +126,7 @@ def _resolve_one(raw: str) -> list[Path]:
     for hit in matches:
         hp = Path(hit)
         if hp.is_dir():
-            out.extend(f for f in sorted(hp.rglob("*")) if f.is_file() and f.suffix.lower() in _DATA_SUFFIXES)
+            out.extend(f for f in sorted(hp.rglob("*")) if f.is_file() and loader.is_data_file(f))
         elif hp.is_file():
             out.append(hp)
     if not out:

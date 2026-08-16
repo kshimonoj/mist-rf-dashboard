@@ -41,10 +41,12 @@ HANG_PATTERN = [1, 1, 1] + [0] * 7 + [1, 1, 1]
 
 @pytest.fixture
 def api_client(tmp_path, monkeypatch):
-    """LOGS_DIR を隔離したディレクトリに向けた TestClient を返す。"""
+    """LOGS_DIR / RESULTS_DIR を隔離したディレクトリに向けた TestClient を返す。"""
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
     monkeypatch.setattr(api, "LOGS_DIR", str(logs_dir))
+    # 保存先は logs_dir の外に置く（配下に置くと次の分析が自分の出力を読む）
+    monkeypatch.setattr(api, "RESULTS_DIR", str(tmp_path / "hangap_results"))
 
     _clear_jobs()
     app = FastAPI()
@@ -609,7 +611,9 @@ def test_outputs_are_written_outside_the_data_directory(api_client, tmp_path):
 
     # data/logs に出力が混ざっていないこと（次回の分析が自分の出力を読んでしまう）
     assert sorted(p.name for p in logs_dir.iterdir()) == ["ap_metrics_20260101_1000_TST.csv"]
-    assert list(tmp_path.rglob("hangap_result*")) == []
+    # data 配下に出るのは保存済み結果（hangap_results）だけ。logs_dir 配下には出ない
+    written = [p for p in tmp_path.rglob("hangap_result_*") if p.is_file()]
+    assert written and {p.parent for p in written} == {Path(api.RESULTS_DIR)}
 
 
 # ---------------------------------------------------------------------------

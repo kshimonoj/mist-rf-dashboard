@@ -151,11 +151,14 @@ def collect_files(directory: str | Path) -> list[Path]:
 
     分析中に ``save_hourly_logs`` がファイルを足しても結果が揺れないよう、
     ジョブ開始時にこの一覧を固定して使う。
+
+    ``hangap_results``（= 保存済みの分析結果）配下は :func:`loader.is_data_file` が
+    無条件で外す。**自分の出力を入力として拾わせないこと。**
     """
     root = Path(directory)
     if not root.is_dir():
         return []
-    return [f for f in sorted(root.rglob("*")) if f.is_file() and f.suffix.lower() in DATA_SUFFIXES]
+    return [f for f in sorted(root.rglob("*")) if f.is_file() and loader.is_data_file(f)]
 
 
 # ---------------------------------------------------------------------------

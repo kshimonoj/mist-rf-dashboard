@@ -8,8 +8,11 @@
 - 同時に走るジョブは 1 つまで（5,000 ファイル超の読み込みが並行すると
   稼働中のポーリング処理を圧迫する）。
 - 結果はプロセス内に保持する。DB には保存しない。
-- 一時ファイルは ``tempfile`` の一時ディレクトリに置く。``data/`` 配下には
-  **書かない**（``data/logs`` に混ざると次回の分析が自分の出力を読み込む）。
+- ジョブの一時ファイルは ``tempfile`` の一時ディレクトリに置く。``data/logs`` には
+  **書かない**（混ざると次回の分析が自分の出力を読み込む）。
+- ``done`` で完了した結果だけは ``data/hangap_results/`` に組（xlsx/csv/json）として
+  保存し、:mod:`hangap.archive` がローテートする。保存先は ``data/logs`` の外なので、
+  次回の分析の入力にはならない（:data:`hangap.loader.EXCLUDED_DIR_NAMES` でも除外）。
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ import pandas as pd
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from hangap import analysis
+from hangap import analysis, archive
 from hangap.detector import RESULT_COLUMNS
 from utils import fmt_dt
 
@@ -36,6 +39,9 @@ logger = logging.getLogger(__name__)
 
 #: 分析対象。このダッシュボードが収集したログだけを見る（アップロードは受け付けない）
 LOGS_DIR = "/app/data/logs"
+
+#: 分析結果の保存先。**``LOGS_DIR`` の配下に置かないこと**（入力として拾われる）
+RESULTS_DIR = f"/app/data/{archive.RESULTS_DIR_NAME}"
 
 #: 保持するジョブ数の上限（超えたら古いものから破棄する）
 MAX_JOBS = 3
@@ -227,6 +233,30 @@ def _analyze_and_write(job: _Job, files: list[Path]) -> _Outcome:
     )
 
 
+def _archive_outcome(job: _Job, outcome: _Outcome) -> None:
+    """``done`` で完了した結果を ``data/hangap_results/`` に保存し、ローテートする。
+
+    保存するのは **ジョブがすでに書き出した xlsx / csv をコピーしたもの**。書式は
+    :mod:`hangap.analysis` の 1 箇所にしか無く、ここで作り直さない（ダウンロードで
+    受け取るファイルと保存されるファイルが必ず同一になる）。
+
+    保存に失敗しても分析そのものは成功しているので、例外はここで止めて done のまま
+    返す（保存できないことを理由にジョブを failed にしない）。
+    """
+    try:
+        name = archive.unique_name(RESULTS_DIR, job.started_at)
+        meta = archive.build_meta(
+            name=name,
+            saved_at=_now(),
+            summary=outcome.summary,
+            warnings=outcome.warnings,
+        )
+        archive.save(RESULTS_DIR, name, outcome.outputs, meta)
+        archive.rotate(RESULTS_DIR)
+    except Exception as e:  # noqa: BLE001 - 保存の失敗でジョブを壊さない
+        logger.warning(f"hangap: 分析結果を保存できませんでした（{job.job_id}）: {e}")
+
+
 def _run_job(job: _Job) -> None:
     """ワーカースレッド本体。FastAPI のワーカーも APScheduler も止めない。"""
     try:
@@ -239,6 +269,7 @@ def _run_job(job: _Job) -> None:
             if job.timed_out:
                 # 打ち切り済み。枠はすでに解放されているので結果は受け取らない
                 _cleanup_tmpdir(outcome.tmpdir, job.job_id)
+                completed = False
             else:
                 job.result = outcome.result
                 job.summary = outcome.summary
@@ -246,6 +277,11 @@ def _run_job(job: _Job) -> None:
                 job.tmpdir = outcome.tmpdir
                 job.outputs = outcome.outputs
                 job.status = STATUS_DONE
+                completed = True
+        # 保存は done のときだけ。failed（タイムアウト・ap_metrics 0 件など）では
+        # 何も書かない（残しても「分析できなかった」記録にしかならない）。
+        if completed:
+            _archive_outcome(job, outcome)
         del outcome
     except analysis.AnalysisError as e:
         # ap_metrics を 1 行も読めなかった場合もここに来る。「検出 0 件」ではなく
@@ -668,3 +704,51 @@ def delete_job(job_id: str):
         else:
             _JOBS.pop(job_id, None)
     return {"job_id": job_id, "deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# 保存済みの分析結果（data/hangap_results/）
+# ---------------------------------------------------------------------------
+
+
+def _result_name(name: str) -> str:
+    """``{name}`` を検証する。**ここを通ったものだけをパスに連結すること。**
+
+    ``hangap_result_YYYYMMDD_HHMMSS`` 以外は 400。パス区切り・``..``・絶対パスは
+    この形にマッチしないので、``RESULTS_DIR`` の外を指す名前は作れない。
+    """
+    if not archive.is_valid_name(name):
+        raise _bad_request(
+            "name", f"hangap_result_YYYYMMDD_HHMMSS の形式で指定してください: {name!r}"
+        )
+    return name
+
+
+@router.get("/results")
+def list_saved_results():
+    """保存済みの分析結果を新しい順で返す（各要素は添えた json の内容 + サイズ）。"""
+    return {"results": archive.list_results(RESULTS_DIR)}
+
+
+@router.get("/results/{name}/download")
+def download_saved_result(name: str, format: str = Query("xlsx", description="xlsx | csv")):
+    """保存済みの xlsx / csv を返す（分析時に書き出したファイルそのもの）。"""
+    name = _result_name(name)
+    if format not in _MEDIA_TYPES:
+        raise _bad_request("format", f"xlsx / csv で指定してください: {format!r}")
+    path = archive.member_path(RESULTS_DIR, name, f".{format}")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"保存済みの結果が見つかりません: {name}.{format}")
+    return FileResponse(path, media_type=_MEDIA_TYPES[format], filename=path.name)
+
+
+@router.delete("/results/{name}")
+def delete_saved_result(name: str):
+    """保存済みの結果を 1 組（xlsx/csv/json）まとめて削除する。"""
+    name = _result_name(name)
+    for result_set in archive.list_sets(RESULTS_DIR):
+        if result_set.name == name:
+            freed = archive.delete_set(result_set)
+            logger.info(f"hangap: 保存済みの結果を削除しました: {name} ({freed}B)")
+            return {"name": name, "deleted": True, "freed_bytes": freed}
+    raise HTTPException(status_code=404, detail=f"保存済みの結果が見つかりません: {name}")

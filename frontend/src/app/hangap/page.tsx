@@ -1,15 +1,17 @@
 "use client";
 
 import {
-  AlertTriangle, ArrowLeft, ArrowUpDown, ChevronDown, ChevronRight,
-  Download, Home, Play, RefreshCw, WifiOff,
+  AlertTriangle, Archive, ArrowLeft, ArrowUpDown, ChevronDown, ChevronRight,
+  Download, Home, Play, RefreshCw, Trash2, WifiOff,
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import {
-  fetchHangapJob, fetchHangapResult, getHangapDownloadUrl, startHangapAnalysis,
-  HangapAnalyzeBody, HangapCell, HangapJob, HangapPhase, HangapResultPage, HangapSummary,
+  deleteHangapSavedResult, fetchHangapJob, fetchHangapResult, fetchHangapSavedResults,
+  getHangapDownloadUrl, getHangapSavedDownloadUrl, startHangapAnalysis,
+  HangapAnalyzeBody, HangapCell, HangapJob, HangapPhase, HangapResultPage,
+  HangapSavedResult, HangapSummary,
 } from "@/lib/api";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import { toLocalString } from "@/lib/time";
@@ -109,6 +111,20 @@ function fmtCell(value: HangapCell): string {
   return String(value);
 }
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 内訳を「回復 3 / 継続中 1」の形にする（0 件の項目は落とす） */
+function formatBreakdown(counts: Record<string, number>): string {
+  const parts = Object.entries(counts)
+    .filter(([, n]) => n > 0)
+    .map(([name, n]) => `${name} ${n}`);
+  return parts.length ? parts.join(" / ") : "-";
+}
+
 function Stat({ label, value, color }: { label: string; value: string | number; color?: string }) {
   return (
     <div className="border rounded-lg p-4" style={cardStyle}>
@@ -179,6 +195,149 @@ function DataInfo({ summary }: { summary: HangapSummary }) {
         ))}
       </dl>
     </div>
+  );
+}
+
+/**
+ * 保存済みの分析結果。分析が done で完了すると**サーバ側で自動保存**される
+ * （保存ボタンは無い）。ここは一覧・ダウンロード・削除だけを持ち、
+ * **結果テーブルの再表示はしない**（ダウンロードで足りる）。
+ */
+function SavedResults({ doneJobId }: { doneJobId: string | null }) {
+  const { timezone } = useTimezone();
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const { data, isLoading, mutate } = useSWR<HangapSavedResult[]>(
+    "hangap-saved-results",
+    fetchHangapSavedResults
+  );
+
+  // 分析が完了したら一覧に出るはずなので取り直す
+  useEffect(() => {
+    if (doneJobId) mutate();
+  }, [doneJobId, mutate]);
+
+  const handleDelete = async (row: HangapSavedResult) => {
+    const when = row.saved_at ? toLocalString(row.saved_at, timezone) : row.name;
+    if (!window.confirm(`${when} の分析結果を削除します。\nxlsx / csv / json をまとめて削除し、元に戻せません。よろしいですか？`)) {
+      return;
+    }
+    setDeleting(row.name);
+    setError(null);
+    try {
+      await deleteHangapSavedResult(row.name);
+      await mutate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const linkStyle = { borderColor: "var(--border-cyan)", color: "var(--cyan)" };
+
+  return (
+    <section className="mt-8">
+      <div className="flex items-center gap-2 mb-3">
+        <Archive className="w-4 h-4" style={{ color: "var(--cyan)" }} />
+        <h2 className="text-sm font-display font-semibold tracking-wider" style={{ color: "var(--cyan)" }}>
+          保存済みの分析結果
+        </h2>
+        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+          分析が完了すると自動で保存されます（古いものから順に整理されます）
+        </span>
+        <button
+          onClick={() => mutate()}
+          className="ml-auto flex items-center gap-1.5 px-2.5 py-1 border rounded text-xs"
+          style={linkStyle}
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
+          再取得
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-sm mb-3" style={{ color: "var(--red)" }}>{error}</p>
+      )}
+
+      {!data || data.length === 0 ? (
+        <div
+          className="border rounded-lg py-10 text-center text-sm"
+          style={{ ...cardStyle, color: "var(--text-muted)" }}
+        >
+          {isLoading ? "読み込み中..." : "保存済みの分析結果はありません"}
+        </div>
+      ) : (
+        <div className="border rounded-lg overflow-x-auto" style={cardStyle}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left" style={{ borderColor: "var(--chart-grid)" }}>
+                {["保存日時", "検出区間数", "回復状況", "警告", "分析条件", "サイズ", ""].map((h) => (
+                  <th key={h} className="py-3 px-3 font-normal whitespace-nowrap" style={{ color: "var(--text-muted)" }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((row) => (
+                <tr key={row.name} className="border-b" style={{ borderColor: "var(--chart-grid)" }}>
+                  <td className="py-2.5 px-3 whitespace-nowrap font-mono text-xs" style={{ color: "var(--text-primary)" }}>
+                    {row.saved_at ? toLocalString(row.saved_at, timezone) : row.name}
+                  </td>
+                  <td className="py-2.5 px-3 font-mono text-xs" style={{ color: "var(--cyan)" }}>
+                    {row.detected_intervals}
+                  </td>
+                  <td className="py-2.5 px-3 whitespace-nowrap text-xs" style={{ color: "var(--text-secondary)" }}>
+                    {formatBreakdown(row.recovery_status)}
+                  </td>
+                  <td
+                    className="py-2.5 px-3 font-mono text-xs"
+                    style={{ color: row.warning_count > 0 ? "var(--yellow)" : "var(--text-muted)" }}
+                  >
+                    {row.warning_count}
+                  </td>
+                  {/* 全文は title に入れる。条件を知らずに件数だけ見ると誤読する */}
+                  <td className="py-2.5 px-3 text-xs" style={{ color: "var(--text-muted)" }}>
+                    <span className="block max-w-md truncate" title={row.condition_text}>
+                      {row.condition_text || "-"}
+                    </span>
+                  </td>
+                  <td className="py-2.5 px-3 whitespace-nowrap font-mono text-xs" style={{ color: "var(--text-muted)" }}>
+                    {formatSize(row.total_bytes)}
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <div className="flex items-center justify-end gap-2">
+                      {(["xlsx", "csv"] as const).map((format) => (
+                        <a
+                          key={format}
+                          href={getHangapSavedDownloadUrl(row.name, format)}
+                          className={`flex items-center gap-1 px-2 py-1 border rounded text-xs ${row.files[format] === undefined ? "pointer-events-none opacity-40" : ""}`}
+                          style={linkStyle}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          {format}
+                        </a>
+                      ))}
+                      <button
+                        onClick={() => handleDelete(row)}
+                        disabled={deleting === row.name}
+                        className="flex items-center gap-1 px-2 py-1 border rounded text-xs disabled:opacity-40"
+                        style={{ borderColor: "var(--red)", color: "var(--red)" }}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        削除
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -770,6 +929,8 @@ export default function HangApPage() {
           「分析を実行」を押すと、収集済みのログからハングAPの候補を検出します。
         </div>
       )}
+
+      <SavedResults doneJobId={job?.status === "done" ? job.job_id : null} />
     </main>
   );
 }

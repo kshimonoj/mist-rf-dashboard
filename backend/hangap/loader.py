@@ -59,6 +59,12 @@ DEFAULT_EVENT_GAP_SECONDS: float = 3600.0
 CSV_SUFFIXES: frozenset[str] = frozenset({".csv"})
 EXCEL_SUFFIXES: frozenset[str] = frozenset({".xlsx", ".xlsm"})
 
+#: 走査から必ず外すディレクトリ名。
+#: ``hangap_results`` は hangap 自身の**出力**（保存済みの分析結果）を置く場所で、
+#: これを入力として拾うとヘッダー判定で弾かれ、既定（``on_unclassified='error'``）
+#: では分析が止まる。ディレクトリ名で無条件に除外する。
+EXCLUDED_DIR_NAMES: frozenset[str] = frozenset({"hangap_results"})
+
 #: ファイル名に現れうるタイムゾーントークン（変換には使わない。混在の警告のみ）
 TZ_TOKENS: frozenset[str] = frozenset(
     {"JST", "UTC", "GMT", "KST", "CST", "PST", "PDT", "EST", "EDT", "CET", "IST", "AEST"}
@@ -364,6 +370,13 @@ def _close(a: float, b: float, tol: float = _INTERVAL_TOLERANCE) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def is_data_file(p: Path) -> bool:
+    """走査対象のデータファイルか。:data:`EXCLUDED_DIR_NAMES` 配下は常に外す。"""
+    if p.suffix.lower() not in (CSV_SUFFIXES | EXCEL_SUFFIXES):
+        return False
+    return not EXCLUDED_DIR_NAMES.intersection(p.parts)
+
+
 def _iter_input_files(paths: str | os.PathLike | Iterable[str | os.PathLike]) -> list[Path]:
     """ファイル・ディレクトリ・glob パターンを展開して、対象ファイルの一覧を返す。"""
     if isinstance(paths, (str, os.PathLike)):
@@ -372,6 +385,8 @@ def _iter_input_files(paths: str | os.PathLike | Iterable[str | os.PathLike]) ->
     seen: set[Path] = set()
 
     def _push(p: Path) -> None:
+        if EXCLUDED_DIR_NAMES.intersection(p.parts):
+            return
         rp = p.resolve()
         if rp not in seen:
             seen.add(rp)

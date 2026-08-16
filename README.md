@@ -333,9 +333,9 @@ The same analysis runs on this dashboard's own `data/logs` via `/api/hangap`. It
 request only — nothing is analysed on a schedule. Reading 5,000+ files takes far longer than a
 request, so it is an asynchronous job with progress polling, and **only one job runs at a time**
 (a second request gets 409 with the running `job_id`). Results are kept in-process, never in
-`mist.db`: at most 3 jobs, discarded an hour after they finish. Output files go to a `tempfile`
-directory, never under `data/` — writing them into `data/logs` would feed the next analysis its
-own output.
+`mist.db`: at most 3 jobs, discarded an hour after they finish. A job's working files go to a
+`tempfile` directory, never into `data/logs` — writing them there would feed the next analysis
+its own output.
 
 ```bash
 curl -s -X POST localhost:8008/api/hangap/analyze -H 'Content-Type: application/json' -d '{}'
@@ -352,13 +352,42 @@ and the defaults are the CLI's own. Both paths call `hangap.analysis`, so the do
 are byte-for-byte what the CLI writes — including the xlsx condition, warning and recovered-row
 fills.
 
+### Saved analysis results
+
+A job that ends `done` is archived automatically to `data/hangap_results/` as one **set** of
+three files sharing a timestamp — `hangap_result_<YYYYMMDD_HHMMSS>.{xlsx,csv,json}`. The xlsx
+and csv are copies of what the job wrote (same bytes as the download); the json holds what the
+filename cannot — interval count, recovery / nearby-AP breakdowns, the analysis conditions,
+warning count and data period. Jobs that end `failed` (timeout, zero `ap_metrics`) archive
+nothing. The Hang AP page lists the sets newest-first with per-set download and delete.
+
+```bash
+curl -s localhost:8008/api/hangap/results
+curl -s 'localhost:8008/api/hangap/results/hangap_result_20260816_101500/download?format=xlsx' -o result.xlsx
+curl -s -X DELETE localhost:8008/api/hangap/results/hangap_result_20260816_101500
+```
+
+Rotation runs right after each save and is deliberately self-contained: it only ever reads and
+deletes inside `data/hangap_results/`, its total-size figure counts only the files it is able to
+delete, and the newest set is never removed. Sets go oldest-first, **whole set at a time**, until
+both limits are met.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HANGAP_RESULTS_MAX_FILES` | `50` | Number of result **sets** to keep (xlsx+csv+json = 1 set) |
+| `HANGAP_RESULTS_MAX_TOTAL_MB` | `500` | Total size cap for `data/hangap_results/` |
+
+`data/hangap_results/` is excluded from log scanning (`hangap.loader.EXCLUDED_DIR_NAMES`), so an
+archived result is never picked up as input by the next analysis.
+
 ## Data Persistence
 
 All data is stored in the `./data/` directory:
 ```
 data/
-├── mist.db          # SQLite database (metrics, settings, credentials, tags, insights)
+├── mist.db           # SQLite database (metrics, settings, credentials, tags, insights)
 ├── logs/             # Auto-saved CSV logs (AP / SLE / client metrics, floor map summary)
+├── hangap_results/   # Saved hang-AP analysis results (xlsx + csv + json per run, rotated)
 └── snapshots/        # Snapshot database files (max 2 slots)
 ```
 

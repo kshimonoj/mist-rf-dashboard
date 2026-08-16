@@ -10,6 +10,8 @@ services:
       - MIST_BASE_URL=${MIST_BASE_URL}
       - POLLING_INTERVAL_SECONDS=${POLLING_INTERVAL_SECONDS:-300}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3007}
+      - HANGAP_RESULTS_MAX_FILES=${HANGAP_RESULTS_MAX_FILES:-50}
+      - HANGAP_RESULTS_MAX_TOTAL_MB=${HANGAP_RESULTS_MAX_TOTAL_MB:-500}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

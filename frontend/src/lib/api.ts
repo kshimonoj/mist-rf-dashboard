@@ -889,3 +889,47 @@ export async function fetchHangapResult(
 /** ダウンロードは常に全列（API の出力をそのまま渡す） */
 export const getHangapDownloadUrl = (jobId: string, format: "xlsx" | "csv") =>
   `${API_BASE}/api/hangap/jobs/${jobId}/download?format=${format}`;
+
+// ── 保存済みの分析結果（data/hangap_results） ─────────────────────────────────
+// 分析が done で完了すると自動で保存される（保存ボタンは無い）。結果テーブルの
+// 再表示はしない（ダウンロードで足りる）。
+
+/** 1 組（xlsx / csv / json）の概要。値は保存時の json をそのまま返したもの。 */
+export interface HangapSavedResult {
+  /** hangap_result_YYYYMMDD_HHMMSS。ダウンロード・削除のキー */
+  name: string;
+  saved_at: string | null;
+  detected_intervals: number;
+  recovery_status: Record<string, number>;
+  neighbor_verdict: Record<string, number>;
+  exodus_suspected: number;
+  event_matched_intervals: number;
+  condition_text: string;
+  warning_count: number;
+  warnings: string[];
+  metrics_period: (string | null)[] | null;
+  events_period: (string | null)[] | null;
+  ap_count: number;
+  files_scanned: number;
+  /** 拡張子ごとのバイト数（保存が途中で落ちた組では欠けることがある） */
+  files: Partial<Record<"xlsx" | "csv" | "json", number>>;
+  total_bytes: number;
+}
+
+/** 新しい順。 */
+export async function fetchHangapSavedResults(): Promise<HangapSavedResult[]> {
+  const res = await fetch(`${API_BASE}/api/hangap/results`);
+  if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP results error ${res.status}`);
+  return (await res.json()).results;
+}
+
+export const getHangapSavedDownloadUrl = (name: string, format: "xlsx" | "csv") =>
+  `${API_BASE}/api/hangap/results/${encodeURIComponent(name)}/download?format=${format}`;
+
+/** 1 組（xlsx/csv/json）をまとめて削除する。 */
+export async function deleteHangapSavedResult(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/hangap/results/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP delete error ${res.status}`);
+}
