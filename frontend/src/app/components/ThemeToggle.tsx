@@ -29,6 +29,7 @@ export default function ThemeToggle() {
         color: "var(--cyan)",
       }}
       title={isDark ? "ライトモードに切り替え" : "ダークモードに切り替え"}
+      aria-label={isDark ? "ライトモードに切り替え" : "ダークモードに切り替え"}
     >
       {isDark ? "☀️" : "🌙"}
     </button>

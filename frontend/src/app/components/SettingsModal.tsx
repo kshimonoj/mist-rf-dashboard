@@ -7,14 +7,26 @@ import { fetchSettings, fetchAllSites, updateSettings, pollNow } from "@/lib/api
 import { useTimezone } from "@/app/providers";
 import EnvironmentsSection from "./EnvironmentsSection";
 
-export default function SettingsButton() {
+interface SettingsButtonProps {
+  /** ドロップダウンのメニュー項目として表示する(ボタン枠なしの全幅・左寄せ) */
+  asMenuItem?: boolean;
+}
+
+export default function SettingsButton({ asMenuItem }: SettingsButtonProps = {}) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
-        style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
+        role={asMenuItem ? "menuitem" : undefined}
+        className={
+          asMenuItem
+            ? "w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors"
+            : "flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
+        }
+        style={asMenuItem ? { color: "var(--cyan)" } : { borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
+        onMouseEnter={asMenuItem ? (e) => (e.currentTarget.style.backgroundColor = "var(--bg-hover)") : undefined}
+        onMouseLeave={asMenuItem ? (e) => (e.currentTarget.style.backgroundColor = "") : undefined}
       >
         <Settings className="w-4 h-4" />
         Settings

@@ -6,9 +6,11 @@ import { pollNow } from "@/lib/api";
 
 interface Props {
   onSuccess?: () => void;
+  /** ドロップダウンのメニュー項目として表示する（ボタン枠なしの全幅・左寄せ） */
+  asMenuItem?: boolean;
 }
 
-export default function PollNowButton({ onSuccess }: Props) {
+export default function PollNowButton({ onSuccess, asMenuItem }: Props) {
   const [polling, setPolling] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -32,8 +34,15 @@ export default function PollNowButton({ onSuccess }: Props) {
       <button
         onClick={handleClick}
         disabled={polling}
-        className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all disabled:opacity-50"
-        style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
+        role={asMenuItem ? "menuitem" : undefined}
+        className={
+          asMenuItem
+            ? "w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors disabled:opacity-50"
+            : "flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all disabled:opacity-50"
+        }
+        style={asMenuItem ? { color: "var(--cyan)" } : { borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
+        onMouseEnter={asMenuItem ? (e) => (e.currentTarget.style.backgroundColor = "var(--bg-hover)") : undefined}
+        onMouseLeave={asMenuItem ? (e) => (e.currentTarget.style.backgroundColor = "") : undefined}
       >
         <Zap className={`w-4 h-4 ${polling ? "animate-pulse" : ""}`} />
         {polling ? "Polling..." : "Poll Now"}

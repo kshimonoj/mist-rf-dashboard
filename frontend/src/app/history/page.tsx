@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Download, Home, RefreshCw, Trash2, FileDown, Camera, Eye, Map, History } from "lucide-react";
+import { Download, RefreshCw, Trash2, FileDown, Camera, Eye, Map, History } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import SaveNowButton from "@/app/components/SaveNowButton";
+import TabNav from "@/app/components/TabNav";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 
@@ -678,29 +679,14 @@ export default function HistoryPage() {
   return (
     <main className="min-h-screen p-6">
       <header className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <Link href="/" className="flex items-center gap-1.5 text-sm transition-colors"
-            style={{ color: "var(--text-muted)" }}>
-            <Home className="w-4 h-4" />
-            Home
-          </Link>
-          <span style={{ color: "var(--chart-grid)" }}>|</span>
-          <Link href="/" className="flex items-center gap-1.5 text-sm transition-colors"
-            style={{ color: "var(--text-muted)" }}>
-            <ArrowLeft className="w-4 h-4" />
-            Back
-          </Link>
-          <div className="ml-1">
-            <h1 className="font-display font-bold text-2xl" style={{ color: "var(--text-primary)" }}>
-              History
-            </h1>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
+        <h1 className="font-display font-bold text-2xl" style={{ color: "var(--text-primary)" }}>
+          History
+        </h1>
+        <div className="flex items-center gap-2 flex-nowrap">
           <SaveNowButton />
           <button
             onClick={() => mutate()}
-            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
+            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all whitespace-nowrap"
             style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
@@ -709,6 +695,8 @@ export default function HistoryPage() {
           <ThemeToggle />
         </div>
       </header>
+
+      <TabNav />
 
       {/* タブ */}
       <div className="flex gap-1 mb-6 border-b" style={{ borderColor: "var(--border-cyan)" }}>

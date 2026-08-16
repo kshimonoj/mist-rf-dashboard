@@ -1,10 +1,9 @@
 "use client";
 
 import {
-  AlertTriangle, Archive, ArrowLeft, ArrowUpDown, ChevronDown, ChevronRight,
-  Download, Home, Play, RefreshCw, Trash2, WifiOff,
+  AlertTriangle, Archive, ArrowUpDown, ChevronDown, ChevronRight,
+  Download, Play, RefreshCw, Trash2, WifiOff,
 } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import {
@@ -14,6 +13,7 @@ import {
   HangapSavedResult, HangapSummary,
 } from "@/lib/api";
 import ThemeToggle from "@/app/components/ThemeToggle";
+import TabNav from "@/app/components/TabNav";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 
@@ -529,31 +529,20 @@ export default function HangApPage() {
   return (
     <main className="min-h-screen p-6">
       <header className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <Link href="/" className="flex items-center gap-1.5 text-sm" style={{ color: "var(--text-muted)" }}>
-            <Home className="w-4 h-4" />
-            Home
-          </Link>
-          <span style={{ color: "var(--chart-grid)" }}>|</span>
-          <Link href="/" className="flex items-center gap-1.5 text-sm" style={{ color: "var(--text-muted)" }}>
-            <ArrowLeft className="w-4 h-4" />
-            Back
-          </Link>
-          <div className="ml-1 flex items-center gap-2">
-            <WifiOff className="w-5 h-5" style={{ color: "var(--cyan)" }} />
-            <h1 className="font-display font-bold text-2xl" style={{ color: "var(--text-primary)" }}>
-              Hang AP
-            </h1>
-          </div>
-        </div>
         <div className="flex items-center gap-2">
-          <p className="text-xs mr-2" style={{ color: "var(--text-muted)" }}>
+          <WifiOff className="w-5 h-5" style={{ color: "var(--cyan)" }} />
+          <h1 className="font-display font-bold text-2xl" style={{ color: "var(--text-primary)" }}>
+            Hang AP
+          </h1>
+        </div>
+        <div className="flex items-center gap-2 flex-nowrap">
+          <p className="text-xs mr-2 whitespace-nowrap" style={{ color: "var(--text-muted)" }}>
             収集済みログを分析（実行したときだけ走ります）
           </p>
           <button
             onClick={reloadJob}
             disabled={!jobId}
-            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all disabled:opacity-40"
+            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all disabled:opacity-40 whitespace-nowrap"
             style={btnStyle}
           >
             <RefreshCw className={`w-4 h-4 ${jobLoading ? "animate-spin" : ""}`} />
@@ -562,6 +551,8 @@ export default function HangApPage() {
           <ThemeToggle />
         </div>
       </header>
+
+      <TabNav />
 
       {/* 分析条件 */}
       <section className="border rounded-lg p-4 mb-6" style={cardStyle}>

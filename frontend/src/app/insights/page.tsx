@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, ArrowUpDown, Home, RefreshCw, Search } from "lucide-react";
+import { ArrowUpDown, RefreshCw, Search } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
@@ -10,6 +10,7 @@ import {
   RecentConfigChange,
 } from "@/lib/api";
 import ThemeToggle from "@/app/components/ThemeToggle";
+import TabNav from "@/app/components/TabNav";
 import { VerdictBadge } from "@/app/components/ConfigImpactPanel";
 import { toLocalDateTimeShort, toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
@@ -332,39 +333,26 @@ export default function InsightsPage() {
   return (
     <main className="min-h-screen p-6">
       <header className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <Link href="/" className="flex items-center gap-1.5 text-sm transition-colors"
-            style={{ color: "var(--text-muted)" }}>
-            <Home className="w-4 h-4" />
-            Home
-          </Link>
-          <span style={{ color: "var(--chart-grid)" }}>|</span>
-          <Link href="/" className="flex items-center gap-1.5 text-sm transition-colors"
-            style={{ color: "var(--text-muted)" }}>
-            <ArrowLeft className="w-4 h-4" />
-            Back
-          </Link>
-          <div className="ml-1 flex items-center gap-2">
-            <Search className="w-5 h-5" style={{ color: "var(--cyan)" }} />
-            <h1 className="font-display font-bold text-2xl" style={{ color: "var(--text-primary)" }}>
-              Insights
-            </h1>
-          </div>
-        </div>
         <div className="flex items-center gap-2">
-          <div className="text-right mr-2">
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>Last analyzed</p>
-            <p className="text-xs font-mono" style={{ color: "var(--text-secondary)" }}>
+          <Search className="w-5 h-5" style={{ color: "var(--cyan)" }} />
+          <h1 className="font-display font-bold text-2xl" style={{ color: "var(--text-primary)" }}>
+            Insights
+          </h1>
+        </div>
+        <div className="flex items-center gap-2 flex-nowrap">
+          <div className="text-right mr-2 whitespace-nowrap">
+            <p className="text-xs whitespace-nowrap" style={{ color: "var(--text-muted)" }}>Last analyzed</p>
+            <p className="text-xs font-mono whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
               {data?.analyzed_at ? toLocalString(data.analyzed_at, timezone) : "—"}
             </p>
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+            <p className="text-xs whitespace-nowrap" style={{ color: "var(--text-muted)" }}>
               分析対象: 直近1時間のデータ
             </p>
           </div>
           <button
             onClick={handleAnalyze}
             disabled={analyzing}
-            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all disabled:opacity-60"
+            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all disabled:opacity-60 whitespace-nowrap"
             style={headerBtnStyle}
           >
             <RefreshCw className={`w-4 h-4 ${analyzing ? "animate-spin" : ""}`} />
@@ -373,6 +361,8 @@ export default function InsightsPage() {
           <ThemeToggle />
         </div>
       </header>
+
+      <TabNav />
 
       {isLoading && (
         <div className="flex justify-center py-20">

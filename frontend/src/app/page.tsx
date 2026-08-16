@@ -1,8 +1,8 @@
 "use client";
 
-import { RefreshCw, Wifi, WifiOff, Activity, History, Map, Search, Tag as TagIcon, ZapOff } from "lucide-react";
+import { RefreshCw, Wifi, WifiOff, Activity, Play, Settings, Tag as TagIcon } from "lucide-react";
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { fetchSites, SiteInfo } from "@/lib/api";
 import ThemeToggle from "./components/ThemeToggle";
@@ -10,10 +10,9 @@ import SaveNowButton from "./components/SaveNowButton";
 import PollNowButton from "./components/PollNowButton";
 import SettingsButton from "./components/SettingsModal";
 import SnapshotButton from "./components/SnapshotModal";
+import Dropdown from "./components/Dropdown";
+import TabNav, { HomeTab } from "./components/TabNav";
 import FloorMapTab, { FloorMapTabHandle } from "./components/FloorMapTab";
-
-const TABS = ["Site Overview", "Floor Map"] as const;
-type Tab = (typeof TABS)[number];
 
 function SiteCard({ site }: { site: SiteInfo }) {
   const onlineRate = site.ap_count > 0 ? (site.online_count / site.ap_count) * 100 : 0;
@@ -85,9 +84,15 @@ function SiteCard({ site }: { site: SiteInfo }) {
 }
 
 export default function HomePage() {
-  const [activeTab, setActiveTab] = useState<Tab>("Site Overview");
+  const [activeTab, setActiveTab] = useState<HomeTab>("Site Overview");
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const floorMapRef = useRef<FloorMapTabHandle>(null);
+
+  // 他ページの Floor Map タブから "/?tab=floormap" で遷移してきた場合、初期表示を合わせる
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("tab") === "floormap") setActiveTab("Floor Map");
+  }, []);
 
   const { data: sites, isLoading, mutate } = useSWR<SiteInfo[]>(
     "sites",
@@ -112,78 +117,54 @@ export default function HomePage() {
             Juniper Mist AP監視
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="text-right mr-2">
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>Last updated</p>
-            <p className="text-xs font-mono" style={{ color: "var(--text-secondary)" }}>
+        <div className="flex items-center gap-2 flex-nowrap">
+          <div className="text-right mr-2 whitespace-nowrap">
+            <p className="text-xs whitespace-nowrap" style={{ color: "var(--text-muted)" }}>Last updated</p>
+            <p className="text-xs font-mono whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
               {lastUpdated.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
             </p>
           </div>
-          <PollNowButton onSuccess={() => mutate()} />
-          <SaveNowButton getFloorMapRows={() => floorMapRef.current?.getRows() ?? null} />
-          <SnapshotButton />
-          <SettingsButton />
-          <Link
-            href="/tags"
-            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
-            style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
-          >
-            <TagIcon className="w-4 h-4" />
-            Tags
-          </Link>
-          <Link
-            href="/hangap"
-            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
-            style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
-          >
-            <ZapOff className="w-4 h-4" />
-            Hang AP
-          </Link>
-          <Link
-            href="/insights"
-            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
-            style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
-          >
-            <Search className="w-4 h-4" />
-            Insights
-          </Link>
-          <Link
-            href="/history"
-            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
-            style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
-          >
-            <History className="w-4 h-4" />
-            History
-          </Link>
           <button
             onClick={() => mutate()}
-            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all"
+            className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm transition-all whitespace-nowrap"
             style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
             Refresh
           </button>
+          <Dropdown label="実行" icon={<Play className="w-4 h-4" />}>
+            {() => (
+              <>
+                <PollNowButton asMenuItem onSuccess={() => mutate()} />
+                <SaveNowButton asMenuItem getFloorMapRows={() => floorMapRef.current?.getRows() ?? null} />
+                <SnapshotButton asMenuItem />
+              </>
+            )}
+          </Dropdown>
+          <Dropdown ariaLabel="設定" icon={<Settings className="w-4 h-4" />}>
+            {(close) => (
+              <>
+                <SettingsButton asMenuItem />
+                <Link
+                  href="/tags"
+                  role="menuitem"
+                  onClick={close}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors"
+                  style={{ color: "var(--cyan)" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--bg-hover)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "")}
+                >
+                  <TagIcon className="w-4 h-4" />
+                  Tags
+                </Link>
+              </>
+            )}
+          </Dropdown>
           <ThemeToggle />
         </div>
       </header>
 
-      {/* Tab bar */}
-      <div className="flex gap-1 mb-6 border-b" style={{ borderColor: "var(--chart-grid)" }}>
-        {TABS.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm transition-colors -mb-px border-b-2"
-            style={{
-              borderColor: activeTab === tab ? "var(--cyan)" : "transparent",
-              color: activeTab === tab ? "var(--cyan)" : "var(--text-muted)",
-            }}
-          >
-            {tab === "Floor Map" && <Map className="w-3.5 h-3.5" />}
-            {tab}
-          </button>
-        ))}
-      </div>
+      <TabNav homeTab={activeTab} onHomeTabChange={setActiveTab} />
 
       {/* Always mounted — visibility controlled by CSS to preserve state */}
       <div className={activeTab === "Floor Map" ? "block" : "hidden"}>
