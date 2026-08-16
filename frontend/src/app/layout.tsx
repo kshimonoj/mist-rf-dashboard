@@ -3,8 +3,8 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "Mist Dashboard",
-  description: "Juniper Mist AP監視ダッシュボード",
+  title: "Mist RF Dashboard",
+  description: "HPE Mist AP監視ダッシュボード",
 };
 
 export default function RootLayout({

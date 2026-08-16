@@ -111,10 +111,10 @@ export default function HomePage() {
             className="font-display font-extrabold text-3xl tracking-widest"
             style={{ color: "var(--cyan)" }}
           >
-            MIST DASHBOARD
+            Mist RF Dashboard
           </h1>
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-            Juniper Mist AP監視
+            HPE Mist AP 監視
           </p>
         </div>
         <div className="flex items-center gap-2 flex-nowrap">
