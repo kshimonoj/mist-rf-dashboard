@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, RefreshCw, Trash2, FileDown, Camera, Eye, Map, History } from "lucide-react";
+import { Download, RefreshCw, Trash2, FileDown, Camera, Eye, Map, History, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
@@ -8,6 +8,8 @@ import {
   fetchSnapshots, fetchLogs, fetchSites, fetchSiteAps, fetchSnapshotDbs, fetchClientList,
   getSnapshotDownloadUrl, getSnapshotDbDownloadUrl, getLogDownloadUrl, getLogFilteredDownloadUrl,
   getLogsZipUrl, deleteLogs, backfillApEvents,
+  downloadPseudonymized, getPseudonymizedLogsUrl,
+  PSEUDONYMIZE_MAX_FILES, PSEUDONYMIZE_NOTICE,
   SnapshotInfo, LogFileInfo, SiteInfo, ApInfo, SnapshotDbMeta, ClientListItem,
 } from "@/lib/api";
 import ThemeToggle from "@/app/components/ThemeToggle";
@@ -273,6 +275,8 @@ function CsvLogsTab() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [pseudoBusy, setPseudoBusy] = useState(false);
+  const [pseudoError, setPseudoError] = useState<string | null>(null);
 
   // fetchLogs: ファイルシステムから全CSV（ap_metrics + floormap）を取得
   const { data: logData, isLoading, mutate } = useSWR("log-files", fetchLogs);
@@ -350,6 +354,7 @@ function CsvLogsTab() {
   const totalBytes = logData?.total_bytes ?? 0;
   const allSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.filename));
   const someSelected = selected.size > 0;
+  const tooManyForPseudonymize = selected.size > PSEUDONYMIZE_MAX_FILES;
 
   const toggleAll = () => {
     if (allSelected) setSelected(new Set());
@@ -363,6 +368,24 @@ function CsvLogsTab() {
       else next.add(filename);
       return next;
     });
+  };
+
+  // 仮名化ダウンロード。サーバがその場で変換して返す（仮名化版は保存されない）。
+  // leak check の発火はファイルではなくエラーで返るので、fetch で受けて表示する。
+  const handlePseudonymize = async () => {
+    const filenames = Array.from(selected);
+    setPseudoBusy(true);
+    setPseudoError(null);
+    try {
+      await downloadPseudonymized(
+        getPseudonymizedLogsUrl(filenames),
+        filenames.length === 1 ? filenames[0] : "pseudonymized_logs.zip",
+      );
+    } catch (e) {
+      setPseudoError(e instanceof Error ? e.message : "仮名化ダウンロードに失敗しました");
+    } finally {
+      setPseudoBusy(false);
+    }
   };
 
   const handleDelete = async () => {
@@ -517,29 +540,62 @@ function CsvLogsTab() {
 
       {/* 選択時アクションバー */}
       {someSelected && (
-        <div className="border rounded-lg px-4 py-2 mb-4 flex items-center gap-3"
+        <div className="border rounded-lg px-4 py-2 mb-4"
           style={{ borderColor: "var(--border-cyan)", backgroundColor: "var(--bg-card)" }}>
-          <span className="text-sm font-mono" style={{ color: "var(--text-secondary)" }}>
-            {selected.size} 件選択中
-          </span>
-          <a
-            href={getLogsZipUrl(Array.from(selected))}
-            download
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded border text-sm font-mono transition-all"
-            style={{ borderColor: "var(--cyan)", color: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }}
-          >
-            <FileDown className="w-4 h-4" />
-            ZIP ダウンロード
-          </a>
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded border text-sm font-mono transition-all disabled:opacity-40"
-            style={{ borderColor: "var(--red)", color: "var(--red)", backgroundColor: "rgba(255,68,68,0.08)" }}
-          >
-            <Trash2 className="w-4 h-4" />
-            {deleting ? "削除中..." : "選択削除"}
-          </button>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-mono" style={{ color: "var(--text-secondary)" }}>
+              {selected.size} 件選択中
+            </span>
+            <a
+              href={getLogsZipUrl(Array.from(selected))}
+              download
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded border text-sm font-mono transition-all"
+              style={{ borderColor: "var(--cyan)", color: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }}
+            >
+              <FileDown className="w-4 h-4" />
+              ZIP ダウンロード
+            </a>
+            {/* 通常のダウンロードとは別の導線にする（取り違えると実データが出る） */}
+            <button
+              onClick={handlePseudonymize}
+              disabled={pseudoBusy || tooManyForPseudonymize}
+              title={
+                tooManyForPseudonymize
+                  ? `一度に仮名化できるのは ${PSEUDONYMIZE_MAX_FILES} 件までです`
+                  : PSEUDONYMIZE_NOTICE
+              }
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded border text-sm font-mono transition-all disabled:opacity-40"
+              style={{ borderColor: "var(--green)", color: "var(--green)", backgroundColor: "rgba(0,255,128,0.08)" }}
+            >
+              <ShieldCheck className={`w-4 h-4 ${pseudoBusy ? "animate-pulse" : ""}`} />
+              {pseudoBusy
+                ? "仮名化中..."
+                : `仮名化ダウンロード${selected.size > 1 ? "（ZIP）" : ""}`}
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded border text-sm font-mono transition-all disabled:opacity-40"
+              style={{ borderColor: "var(--red)", color: "var(--red)", backgroundColor: "rgba(255,68,68,0.08)" }}
+            >
+              <Trash2 className="w-4 h-4" />
+              {deleting ? "削除中..." : "選択削除"}
+            </button>
+          </div>
+          {/* 仮名化 ≠ 匿名化。落とす人がREADMEを読むとは限らないので導線の隣に置く */}
+          <p className="text-xs mt-2 leading-relaxed" style={{ color: "var(--text-muted)" }}>
+            {PSEUDONYMIZE_NOTICE}
+            {tooManyForPseudonymize && (
+              <span style={{ color: "var(--yellow)" }}>
+                {" "}一度に仮名化できるのは {PSEUDONYMIZE_MAX_FILES} 件までです（現在 {selected.size} 件選択中）。
+              </span>
+            )}
+          </p>
+          {pseudoError && (
+            <p className="text-xs mt-2 font-mono whitespace-pre-wrap" style={{ color: "var(--red)" }}>
+              {pseudoError}
+            </p>
+          )}
         </div>
       )}
 

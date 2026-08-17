@@ -1058,3 +1058,70 @@ export async function deleteHangapSavedResult(name: string): Promise<void> {
   });
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP delete error ${res.status}`);
 }
+
+// ── 仮名化ダウンロード（/api/pseudonymize） ───────────────────────────────────
+// 仮名化版のファイルはサーバに作り置きしない。ダウンロードのたびにその場で変換する。
+// 同じ AP は常に同じ仮名になる（サーバ側でソルトとマッピングを永続化している）。
+//
+// **仮名化であって匿名化ではない。** AP 台数・接続端末数の規模やイベントの発生
+// パターンは残るため、再識別のリスクはゼロにならない。
+
+/** 一度に仮名化できるファイル数の上限（サーバ側の既定。/limits で取り直せる） */
+export const PSEUDONYMIZE_MAX_FILES = 50;
+
+/** 仮名化であって匿名化ではない旨の注意書き（導線の近くに必ず出す） */
+export const PSEUDONYMIZE_NOTICE =
+  "仮名化であって匿名化ではありません。AP名・サイト名・MAC・IP・時刻は置き換わりますが、" +
+  "AP台数や接続端末数の規模、イベントの発生パターンは残るため、再識別のリスクはゼロになりません。";
+
+export const getPseudonymizedLogsUrl = (filenames: string[]) =>
+  `${API_BASE}/api/pseudonymize/logs?files=${encodeURIComponent(filenames.join(","))}`;
+
+/** csv のみ。xlsx はタイトル・分析条件の自由記述が仮名化できないため対象外。 */
+export const getPseudonymizedResultUrl = (name: string) =>
+  `${API_BASE}/api/pseudonymize/results/${encodeURIComponent(name)}?format=csv`;
+
+function filenameFromResponse(res: Response, fallback: string): string {
+  // サーバはタイムシフト後の名前を付ける（ファイル名に実日付が残ると台無しになる）。
+  // CORS で Content-Disposition を expose しているので読める。
+  const cd = res.headers.get("Content-Disposition") ?? "";
+  const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if (utf8) {
+    try {
+      return decodeURIComponent(utf8[1]);
+    } catch {
+      /* 壊れていたら下の filename= を使う */
+    }
+  }
+  const plain = /filename="([^"]+)"/i.exec(cd);
+  return plain ? plain[1] : fallback;
+}
+
+/**
+ * 仮名化ダウンロードを実行する。leak check の発火などはサーバが本文を返さずに
+ * エラーにするので、`<a download>` ではなく fetch で受けて呼び出し側に投げる。
+ */
+export async function downloadPseudonymized(url: string, fallbackName: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    let message = `仮名化ダウンロードに失敗しました（${res.status}）`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") message = body.detail;
+    } catch {
+      /* JSON でなければ既定のメッセージ */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const name = filenameFromResponse(res, fallbackName);
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+  return name;
+}

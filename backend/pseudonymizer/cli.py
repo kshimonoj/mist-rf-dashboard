@@ -113,8 +113,11 @@ def validate_output_dir(out_dir: str, inputs: list[str]) -> None:
 # 読み込み
 # ---------------------------------------------------------------------------
 
-def read_input(path: str, unknown_mode: str) -> InputFile:
-    with open(path, newline="", encoding="utf-8") as f:
+def read_input(path: str, unknown_mode: str, encoding: str = "utf-8") -> InputFile:
+    # encoding: Hang AP の分析結果 csv は Excel 向けに utf-8-sig（BOM 付き）で
+    # 書かれている。BOM を剥がさないと 1 列目が "﻿ap_name" になって種別判定に
+    # 失敗するため、呼び出し側が指定できるようにしてある。
+    with open(path, newline="", encoding=encoding) as f:
         reader = csv.DictReader(f, restkey="__extra__", restval="")
         header = list(reader.fieldnames or [])
         if not header:

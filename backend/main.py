@@ -12,7 +12,7 @@ load_dotenv()
 
 from database import Base, SessionLocal, engine, migrate_db
 from models import AppSettings, Credentials
-from routers import aps, clients, credentials, floor_map, hangap, insights, logs, poll, radio, settings, sites, sle, snapshot_db, snapshots, tags
+from routers import aps, clients, credentials, floor_map, hangap, insights, logs, poll, pseudonymize, radio, settings, sites, sle, snapshot_db, snapshots, tags
 import scheduler as sched_module
 from scheduler import (
     poll_all_sites, poll_clients, prune_old_metrics,
@@ -152,6 +152,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # ダウンロードのファイル名をフロントから読めるようにする
+    # （仮名化ダウンロードはサーバ側で日付をずらした名前を付ける）
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(sites.router)
@@ -169,6 +172,7 @@ app.include_router(settings.router)
 app.include_router(credentials.router)
 app.include_router(poll.router)
 app.include_router(hangap.router)
+app.include_router(pseudonymize.router)
 
 
 @app.get("/health")

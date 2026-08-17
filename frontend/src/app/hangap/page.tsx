@@ -2,13 +2,14 @@
 
 import {
   AlertTriangle, Archive, ChevronDown, ChevronRight, Clock,
-  Download, Eye, Play, RefreshCw, Trash2, WifiOff, X,
+  Download, Eye, Play, RefreshCw, ShieldCheck, Trash2, WifiOff, X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import useSWR from "swr";
 import {
   deleteHangapSavedResult, fetchHangapJob, fetchHangapLogSites, fetchHangapSavedResults,
   getHangapSavedDownloadUrl, startHangapAnalysis,
+  downloadPseudonymized, getPseudonymizedResultUrl, PSEUDONYMIZE_NOTICE,
   HangapAnalyzeBody, HangapJob, HangapLogSite, HangapLogSites, HangapPhase,
   HangapSavedResult, HangapSummary,
 } from "@/lib/api";
@@ -436,6 +437,7 @@ function SavedResults({
   const { timezone } = useTimezone();
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pseudonymizing, setPseudonymizing] = useState<string | null>(null);
 
   const { data, isLoading, mutate } = useSWR<HangapSavedResult[]>(
     "hangap-saved-results",
@@ -446,6 +448,20 @@ function SavedResults({
   useEffect(() => {
     if (doneJobId) mutate();
   }, [doneJobId, mutate]);
+
+  // 仮名化ダウンロードは csv のみ。xlsx は 1〜3 行目の自由記述（タイトル・分析条件・
+  // 警告）にサイト名・site_id・時刻が入るため対象外で、導線も出さない。
+  const handlePseudonymize = async (row: HangapSavedResult) => {
+    setPseudonymizing(row.name);
+    setError(null);
+    try {
+      await downloadPseudonymized(getPseudonymizedResultUrl(row.name), `${row.name}.csv`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPseudonymizing(null);
+    }
+  };
 
   const handleDelete = async (row: HangapSavedResult) => {
     const when = row.saved_at ? toLocalString(row.saved_at, timezone) : row.name;
@@ -487,8 +503,14 @@ function SavedResults({
         </button>
       </div>
 
+      {/* 仮名化 ≠ 匿名化。落とす人がREADMEを読むとは限らないので導線の隣に置く */}
+      <p className="text-xs mb-3 leading-relaxed" style={{ color: "var(--text-muted)" }}>
+        「仮名化 csv」は AP名・サイト名・時刻を置き換えた csv をその場で作って返します
+        （xlsx はタイトル・分析条件の自由記述が仮名化できないため対象外です）。{PSEUDONYMIZE_NOTICE}
+      </p>
+
       {error && (
-        <p className="text-sm mb-3" style={{ color: "var(--red)" }}>{error}</p>
+        <p className="text-sm mb-3 whitespace-pre-wrap" style={{ color: "var(--red)" }}>{error}</p>
       )}
 
       {!data || data.length === 0 ? (
@@ -576,6 +598,17 @@ function SavedResults({
                           {format}
                         </a>
                       ))}
+                      {/* 通常のダウンロードとは別の導線。csv だけに出す */}
+                      <button
+                        onClick={() => handlePseudonymize(row)}
+                        disabled={pseudonymizing === row.name || row.files.csv === undefined}
+                        title={PSEUDONYMIZE_NOTICE}
+                        className="flex items-center gap-1 px-2 py-1 border rounded text-xs disabled:opacity-40"
+                        style={{ borderColor: "var(--green)", color: "var(--green)" }}
+                      >
+                        <ShieldCheck className={`w-3.5 h-3.5 ${pseudonymizing === row.name ? "animate-pulse" : ""}`} />
+                        {pseudonymizing === row.name ? "仮名化中..." : "仮名化 csv"}
+                      </button>
                       <button
                         onClick={() => handleDelete(row)}
                         disabled={deleting === row.name}

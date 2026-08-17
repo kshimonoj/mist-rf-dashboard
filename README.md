@@ -55,6 +55,9 @@ Wi-Fi issues across all sites.
   different machine, even after the live data has rolled off
 - **CSV Export**: automatic hourly export (AP metrics, SLE metrics, client metrics, floor map
   summary) with manual "Save Now", searchable/filterable History page
+- **Pseudonymized download**: download CSV logs and Hang AP analysis results with AP names,
+  site names, MACs, IPs and timestamps consistently replaced — converted on the fly, so no
+  second copy is ever stored (see [Pseudonymized download](#pseudonymized-download))
 - **Multi-Environment**: register multiple Mist orgs (e.g. per customer/site) and switch between
   them from the GUI — no container restart required
 - **Settings (GUI)**: API credentials, region, polling interval, log retention, timezone, and
@@ -474,10 +477,48 @@ those `[ROTATE][DRY-RUN]` lines before enabling it.
 
 The retention period comes from **log retention** in the Settings GUI (default 30 days).
 
+## Pseudonymized download
+
+CSV logs (History page) and saved Hang AP analysis results can be downloaded in a
+**pseudonymized** form, for sharing with vendors or for use in write-ups.
+
+- History: select one or more files, then **仮名化ダウンロード** (multiple files come back as a ZIP,
+  up to 50 per request).
+- Hang AP → saved results: **仮名化 csv** on each row. `xlsx` is *not* supported — its first three
+  rows are free-form title / conditions / warnings text containing site names, `site_id` and
+  timestamps, which a column whitelist cannot cover.
+
+Conversion happens **at download time**; no pseudonymized copy is ever written to `data/logs`.
+AP names, site names, MAC addresses, IPs, SSIDs, hostnames and floor-map names are replaced with
+stable pseudonyms (`AP_0001`, `SITE_001`, …) and all timestamps are shifted by a fixed offset.
+Output is verified before it is returned (leak check): if anything unconverted is detected the
+request fails with `422` and **no file is returned**.
+
+**This is pseudonymization, not anonymization.** The number of APs, client counts and event
+patterns are preserved, so re-identification risk is not zero.
+
+### The salt and the mapping are the whole point
+
+Consistency ("the same AP always gets the same pseudonym") is guaranteed by two files:
+
+```
+data/.pseudonym_salt.json    # salt + time offset, mode 0600
+data/.pseudonym_map.json     # original value -> sequence number, mode 0600
+```
+
+They live in `data/` — deliberately **outside `data/logs`**, so they can never be listed or
+fetched through the log APIs. `data/` is git-ignored, and both filenames are ignored by name too.
+
+**If you lose these files there is no recovery.** New files will be created and the same AP will
+get a different pseudonym, so anything you previously shared can no longer be correlated with
+anything you share afterwards. Back them up somewhere safe outside the repository.
+
+Details, the per-column rules and the CLI equivalent: [`backend/pseudonymizer/README.md`](backend/pseudonymizer/README.md).
+
 ## Security Notes
 
 - `.env` is excluded from git via `.gitignore` — **do not commit it**
-- `data/` (SQLite database) is also excluded — **do not commit it**
+- `data/` (SQLite database, CSV logs, pseudonymizer salt/mapping) is also excluded — **do not commit it**
 - **Never** write your API token or Org ID directly in code or README files
 - API tokens stored in the database are masked (`abcd****`) in the GUI and API responses
 - `mist_base_url` is restricted to `*.mist.com` to prevent SSRF / token exfiltration

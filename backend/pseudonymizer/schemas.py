@@ -30,6 +30,9 @@ class TransformType(str, Enum):
     AP_NAME_LIST = "AP_NAME_LIST"
     VLAN = "VLAN"
     TIMESTAMP = "TIMESTAMP"
+    #: ``" | "`` 区切りで並んだ時刻。各要素に TIMESTAMP と同じシフトを適用する。
+    #: 実装は :mod:`pseudonymizer.service`（エンジン本体は変更しない）。
+    TIMESTAMP_LIST = "TIMESTAMP_LIST"
     PASSTHROUGH = "PASSTHROUGH"
 
 
@@ -114,6 +117,37 @@ COLUMN_RULES: dict[str, TransformType] = {
     # floormap_summary
     "ap_count": T.PASSTHROUGH,
     "has_interference": T.PASSTHROUGH,
+    # --- Hang AP 分析結果（列名は日本語。HANGAP_RESULT_COLUMNS 参照）---
+    "ゼロ直前時刻": T.TIMESTAMP,
+    "ゼロ開始": T.TIMESTAMP,
+    "ゼロ終了": T.TIMESTAMP,
+    "回復時刻": T.TIMESTAMP,
+    "Event時刻": T.TIMESTAMP_LIST,
+    "周辺AP名": T.AP_NAME_LIST,
+    # 以下は数値・列挙・真偽値。AP や場所を指さないのでそのまま通す。
+    # Event詳細 は ``reason=...`` / ``channel=A→B`` の形で、値は Mist の列挙型。
+    "区間番号": T.PASSTHROUGH,
+    "AP内区間数": T.PASSTHROUGH,
+    "直前clients": T.PASSTHROUGH,
+    "直後clients（回復時）": T.PASSTHROUGH,
+    "連続ゼロ回数": T.PASSTHROUGH,
+    "回復状況": T.PASSTHROUGH,
+    "AP最大clients": T.PASSTHROUGH,
+    "AP Event（±30分）": T.PASSTHROUGH,
+    "ゼロ終了との差(分)": T.PASSTHROUGH,
+    "Event種別": T.PASSTHROUGH,
+    "Event詳細": T.PASSTHROUGH,
+    "サイト合計clients(ゼロ開始時)": T.PASSTHROUGH,
+    "サイト合計clients(ゼロ終了時)": T.PASSTHROUGH,
+    "サイト全体変化率": T.PASSTHROUGH,
+    "退場疑い": T.PASSTHROUGH,
+    "周辺AP数": T.PASSTHROUGH,
+    "周辺AP距離": T.PASSTHROUGH,
+    "周辺AP端末数": T.PASSTHROUGH,
+    "周辺AP端末数合計": T.PASSTHROUGH,
+    "周辺AP判定": T.PASSTHROUGH,
+    "周辺AP RF隣接数": T.PASSTHROUGH,
+    "周辺AP実測なし数": T.PASSTHROUGH,
 }
 
 # ap_metrics の radio_* 24 列（すべて PASSTHROUGH）
@@ -236,6 +270,79 @@ FLOORMAP_AP_DETAIL_COLUMNS: tuple[str, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Hang AP 分析結果 CSV（data/hangap_results/*.csv）
+#
+# 列は ``hangap.detector.RESULT_COLUMNS`` と同一・同順。pseudonymizer は単体で動く
+# CLI であり hangap（pandas / openpyxl）に依存させたくないので、ここへ **写して**
+# 持つ。定義がずれたら tests/pseudonymizer/test_hangap_result.py が落ちる。
+# xlsx は対象外（1〜3 行目の自由記述にサイト名・時刻が入り、列ホワイトリストが効かない）。
+# ---------------------------------------------------------------------------
+
+#: ``Event時刻`` など、イベント列の区切り（``hangap.detector.EVENT_SEPARATOR`` と同じ）
+EVENT_LIST_SEPARATOR: str = " | "
+
+HANGAP_RESULT_COLUMNS: tuple[str, ...] = (
+    "ap_name",
+    "site_name",
+    "区間番号",
+    "AP内区間数",
+    "ゼロ直前時刻",
+    "直前clients",
+    "直後clients（回復時）",
+    "ゼロ開始",
+    "ゼロ終了",
+    "連続ゼロ回数",
+    "回復状況",
+    "回復時刻",
+    "AP最大clients",
+    "AP Event（±30分）",
+    "Event時刻",
+    "ゼロ終了との差(分)",
+    "Event種別",
+    "Event詳細",
+    "サイト合計clients(ゼロ開始時)",
+    "サイト合計clients(ゼロ終了時)",
+    "サイト全体変化率",
+    "退場疑い",
+    "周辺AP数",
+    "周辺AP名",
+    "周辺AP距離",
+    "周辺AP端末数",
+    "周辺AP端末数合計",
+    "周辺AP判定",
+    "周辺AP RF隣接数",
+    "周辺AP実測なし数",
+)
+
+#: 分析結果に **構造として** 現れる非 ASCII 文字列（列名を除く）。
+#:
+#: leak check の「非 ASCII」規則は、日本語の施設名・SSID・ホスト名の変換漏れを
+#: 捕まえるためのもの。分析結果は列名も判定値も日本語なので、そのまま当てると
+#: 必ず発火して 1 件も落とせなくなる。そこで **ここに挙げた文字列だけ** を
+#: 構造由来として除き、残った非 ASCII は従来どおり違反として扱う
+#: （:func:`pseudonymizer.service.non_ascii_violations`）。
+#:
+#: 値は ``hangap`` 側の定数と一致していなければならない（テストで固定する）。
+HANGAP_RESULT_TEXT_LITERALS: tuple[str, ...] = (
+    # 回復状況（hangap.analysis.STATUS_ORDER）
+    "回復",
+    "継続中",
+    "打ち切り(欠測)",
+    "打ち切り(AP停止)",
+    # 周辺AP判定（hangap.analysis.VERDICT_ORDER）
+    "周辺に端末あり",
+    "周辺も端末なし",
+    "判定不能",
+    # 周辺AP端末数の「実測できなかった」表示（hangap.neighbors.NO_MEASUREMENT）
+    "実測なし",
+    # AP Event（±30分）
+    "あり",
+    # Event詳細 の channel=A→B / bandwidth=A→B
+    "→",
+)
+
+
 FILE_TYPES: tuple[FileType, ...] = (
     FileType(
         key="ap_metrics",
@@ -278,6 +385,10 @@ FILE_TYPES: tuple[FileType, ...] = (
         # 1 行に観測側と被観測側の 2 台が並ぶ。組を分けないと別の AP が同一視される
         ap_link_groups=(("ap_mac", "ap_name"), ("neighbor_mac", "neighbor_name")),
     ),
+    FileType(
+        key="hangap_result",
+        columns=HANGAP_RESULT_COLUMNS,
+    ),
 )
 
 FILE_TYPES_BY_KEY: dict[str, FileType] = {ft.key: ft for ft in FILE_TYPES}
@@ -292,6 +403,7 @@ EXPECTED_COLUMN_COUNTS: dict[str, int] = {
     "floormap_summary": 8,
     "floormap_ap_detail": 24,
     "rf_neighbors": 9,
+    "hangap_result": 30,
 }
 
 
