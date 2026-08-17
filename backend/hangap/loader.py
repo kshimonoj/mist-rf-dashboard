@@ -136,6 +136,24 @@ class SitePeriod:
 
 
 @dataclass
+class SiteFilter:
+    """サイト指定の解決結果（指定が無いときは ``LoadReport.site_filter`` が None）。"""
+
+    #: 利用者が指定した文字列（site_id または site_name）
+    requested: tuple[str, ...] = ()
+    #: 解決できた site_id（指定順・重複なし）
+    site_ids: tuple[str, ...] = ()
+    #: 表示用のラベル（``名前 [site_id]``）
+    labels: tuple[str, ...] = ()
+    #: ログに存在しなかった指定。**空でなければ分析を続けないこと**
+    missing: tuple[str, ...] = ()
+    #: 絞り込む前にログへ含まれていたサイトのラベル（指定ミスを説明するために持つ）
+    available: tuple[str, ...] = ()
+    #: 絞り込む前の ap_metrics 行数（「ログが無い」と「サイトが無い」を区別するため）
+    rows_before: int = 0
+
+
+@dataclass
 class GapSummary:
     """ギャップ（欠測）の集計。"""
 
@@ -163,6 +181,8 @@ class LoadReport:
     interval_groups: list[tuple[float, int]] = field(default_factory=list)
     gaps: GapSummary = field(default_factory=GapSummary)
     site_periods: list[SitePeriod] = field(default_factory=list)
+    #: サイト指定の解決結果（指定が無ければ None）
+    site_filter: SiteFilter | None = None
     metrics_period: tuple[datetime, datetime] | None = None
     events_period: tuple[datetime, datetime] | None = None
     #: メトリクス期間のうちイベントが存在しない区間
@@ -255,6 +275,18 @@ class LoadReport:
                 f"  最大: {_fmt_secs(g.max_seconds)}  "
                 f"{_fmt_dt(g.max_start)} → {_fmt_dt(g.max_end)}  ap={g.max_ap_name}"
             )
+
+        add("")
+        add("[ サイト指定 ]")
+        sf = self.site_filter
+        if sf is None:
+            add("  すべてのサイト（指定なし）")
+        else:
+            add(f"  指定: {', '.join(sf.requested) or '（なし）'}")
+            add(f"  対象: {', '.join(sf.labels) or '（該当なし）'}")
+            add(f"  絞り込み前の ap_metrics 行数: {sf.rows_before}")
+            if sf.missing:
+                add(f"  ログに存在しない指定: {', '.join(sf.missing)}")
 
         add("")
         add("[ site_id ごとの出現期間 ]")
@@ -619,6 +651,66 @@ def _site_periods(metrics: pd.DataFrame) -> list[SitePeriod]:
     return sorted(out, key=lambda s: (s.first, s.site_id))
 
 
+def _site_label(site_id: str, site_name: str) -> str:
+    return f"{site_name} [{site_id}]" if site_name else f"[{site_id}]"
+
+
+def _resolve_site_filter(metrics: pd.DataFrame, sites: Sequence[str]) -> SiteFilter:
+    """指定された文字列（site_id または site_name）を site_id へ解決する。
+
+    ログには site_id と site_name の両方が入っているので、どちらで指定しても通す
+    （UI は site_id を送り、CLI では人が読める名前で指定できる）。同じ名前の
+    サイトが複数の site_id で存在する場合は、その **すべて** を対象にする。
+    """
+    requested: list[str] = []
+    for raw in sites:
+        token = str(raw).strip()
+        if token and token not in requested:
+            requested.append(token)
+
+    by_id: dict[str, str] = {}
+    by_name: dict[str, list[str]] = {}
+    if not metrics.empty and "site_id" in metrics.columns:
+        pairs = (
+            metrics[["site_id", "site_name"]]
+            .fillna("")
+            .astype(str)
+            .drop_duplicates()
+        )
+        for site_id, site_name in pairs.itertuples(index=False, name=None):
+            by_id.setdefault(site_id, site_name)
+            if site_name:
+                by_name.setdefault(site_name, []).append(site_id)
+
+    selected: list[str] = []
+    missing: list[str] = []
+    for token in requested:
+        hits = [token] if token in by_id else by_name.get(token, [])
+        if not hits:
+            missing.append(token)
+            continue
+        for site_id in hits:
+            if site_id not in selected:
+                selected.append(site_id)
+
+    return SiteFilter(
+        requested=tuple(requested),
+        site_ids=tuple(selected),
+        labels=tuple(_site_label(sid, by_id.get(sid, "")) for sid in selected),
+        missing=tuple(missing),
+        available=tuple(_site_label(sid, name) for sid, name in sorted(by_id.items())),
+        rows_before=int(len(metrics)),
+    )
+
+
+def _filter_by_site(df: pd.DataFrame, site_ids: Sequence[str]) -> pd.DataFrame:
+    """``site_id`` が指定に含まれる行だけを残す。"""
+    if df.empty or "site_id" not in df.columns:
+        return df
+    keep = df["site_id"].fillna("").astype(str).isin(list(site_ids))
+    return df[keep].reset_index(drop=True)
+
+
 def _event_blind_spots(
     metrics_period: tuple[datetime, datetime] | None,
     event_times: Sequence[pd.Timestamp],
@@ -652,6 +744,7 @@ def load(
     file_types: Iterable[str] | None = None,
     gap_factor: float = DEFAULT_GAP_FACTOR,
     event_gap_seconds: float = DEFAULT_EVENT_GAP_SECONDS,
+    sites: Iterable[str] | None = None,
 ) -> LoadResult:
     """ログを結合して正規化済みの DataFrame とレポートを返す。
 
@@ -660,6 +753,10 @@ def load(
         ここに無い種別も判定は行い、ファイル数・行数はレポートに残す。
     :param gap_factor: 推定間隔の何倍を超えたらギャップとみなすか。
     :param event_gap_seconds: 「イベントが存在しない区間」として報告する最小の長さ（秒）。
+    :param sites: 対象サイト（site_id または site_name）。None ならすべてのサイト。
+        絞り込みは **推定・検出より前** に行う（ギャップも間隔も、絞り込んだ後の
+        データで数えないとレポートと結果が食い違う）。解決できなかった指定は
+        ``report.site_filter.missing`` に残す（ここでは例外にしない）。
     """
     wanted = tuple(file_types) if file_types is not None else DEFAULT_FILE_TYPES
     for key in wanted:
@@ -759,8 +856,19 @@ def load(
         )
 
     metrics = _finalize_metrics(metrics_parts, report)
+
+    # サイトの絞り込み。ap_events は site_id を持たず、イベントは AP 単位で
+    # 突き合わせる（detector が ap_name で引く）ため、ここでは絞らない。
+    # 絞ると「site_name が空のイベント」を落として結果が変わってしまう。
+    if sites is not None:
+        report.site_filter = _resolve_site_filter(metrics, list(sites))
+        metrics = _filter_by_site(metrics, report.site_filter.site_ids)
+
     events = _finalize_events(events_parts, report)
-    rf_neighbors = _finalize_rf_neighbors(rf_parts, report)
+    rf_neighbors = _finalize_rf_neighbors(
+        rf_parts, report,
+        site_ids=report.site_filter.site_ids if report.site_filter else None,
+    )
 
     # --- 推定・検出 ---
     intervals, overall = _estimate_intervals(metrics)
@@ -900,7 +1008,11 @@ def _finalize_events(parts: list[pd.DataFrame], report: LoadReport) -> pd.DataFr
     return df.reset_index(drop=True)
 
 
-def _finalize_rf_neighbors(parts: list[pd.DataFrame], report: LoadReport) -> pd.DataFrame:
+def _finalize_rf_neighbors(
+    parts: list[pd.DataFrame],
+    report: LoadReport,
+    site_ids: Sequence[str] | None = None,
+) -> pd.DataFrame:
     """rf_neighbors を結合・正規化する。
 
     重複判定は ``(site_id, band, ap_mac, neighbor_mac, timestamp)``。
@@ -932,6 +1044,11 @@ def _finalize_rf_neighbors(parts: list[pd.DataFrame], report: LoadReport) -> pd.
     removed = before - len(df)
     if RF_NEIGHBORS_FILE_TYPE in report.file_stats:
         report.file_stats[RF_NEIGHBORS_FILE_TYPE].duplicates_removed = removed
+
+    # サイトを絞る場合はレポートの集計より前に落とす（対象外サイトの取得時刻を
+    # 「分析に使用」と報告してしまわないため）
+    if site_ids is not None:
+        df = _filter_by_site(df, site_ids)
 
     df = df.reset_index(drop=True)
     report.rf_neighbors_rows = int(len(df))

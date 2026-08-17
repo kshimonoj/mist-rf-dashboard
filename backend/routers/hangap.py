@@ -30,7 +30,7 @@ import pandas as pd
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from hangap import analysis, archive, table
+from hangap import analysis, archive, sites as log_sites, table
 from hangap.detector import RESULT_COLUMNS
 from utils import fmt_dt
 
@@ -60,7 +60,8 @@ STATUS_FAILED = "failed"
 
 #: リクエストボディで受け付けるキー。これ以外は 400 にする（打ち間違いを黙って無視しない）
 _BODY_FIELDS: frozenset[str] = frozenset({
-    "from", "to", "min_zero_samples", "min_zero_duration", "event_window_minutes",
+    "from", "to", "sites",
+    "min_zero_samples", "min_zero_duration", "event_window_minutes",
     "exodus_threshold", "gap_factor", "neighbor_count", "max_distance_m",
     "neighbor_client_threshold", "truncated_warn_ratio",
 })
@@ -470,6 +471,32 @@ def _min_zero_duration(body: dict[str, Any]) -> pd.Timedelta | None:
     return td
 
 
+def _sites(body: dict[str, Any]) -> tuple[str, ...] | None:
+    """対象サイト。**省略（null）はすべてのサイト**。
+
+    空配列は 400 にする（「1 つも選んでいない」を「すべて」と読み替えると、
+    指定漏れのまま全サイトが対象になってしまう）。
+    """
+    key = "sites"
+    raw = body.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise _bad_request(key, f"site_id の配列で指定してください: {raw!r}")
+    out: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            raise _bad_request(key, f"site_id は空でない文字列で指定してください: {value!r}")
+        token = value.strip()
+        if token not in out:
+            out.append(token)
+    if not out:
+        raise _bad_request(
+            key, "1 つ以上指定してください（すべてのサイトを対象にする場合は省略します）"
+        )
+    return tuple(out)
+
+
 def _build_params(body: dict[str, Any] | None) -> analysis.AnalysisParams:
     """リクエストボディから分析条件を組み立てる。
 
@@ -497,6 +524,7 @@ def _build_params(body: dict[str, Any] | None) -> analysis.AnalysisParams:
     return analysis.AnalysisParams(
         window_start=window_start,
         window_end=window_end,
+        sites=_sites(body),
         min_zero_samples=int(
             _number(body, "min_zero_samples", d.min_zero_samples, integer=True, minimum=1)
         ),
@@ -636,6 +664,42 @@ def _job_state(job: _Job) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # エンドポイント
 # ---------------------------------------------------------------------------
+
+
+@router.get("/sites")
+def list_log_sites(
+    refresh: bool = Query(False, description="キャッシュを捨ててログを読み直す"),
+):
+    """``data/logs`` に含まれるサイトを返す（分析対象の選択肢）。
+
+    **``/api/sites``（現在の監視対象）からは作らない。** 環境を切り替えると
+    ``data/logs`` には現在監視していないサイトのログが残るため、監視対象だけを
+    選択肢にすると、そのログを分析できなくなる。
+
+    走査結果はプロセス内にキャッシュする（入力ファイルが増減・更新されれば
+    自動で作り直す。``?refresh=true`` で明示的に読み直す）。
+    """
+    _sweep()
+    files = analysis.collect_files(LOGS_DIR)
+    scan = log_sites.scan(files, refresh=refresh)
+    return {
+        "sites": [
+            {
+                "site_id": s.site_id,
+                "site_name": s.site_name,
+                "ap_count": s.ap_count,
+                "rows": s.rows,
+                "files": s.files,
+                "first": s.first,
+                "last": s.last,
+            }
+            for s in scan.sites
+        ],
+        "files_scanned": scan.files_scanned,
+        "metrics_files": scan.metrics_files,
+        "scanned_at": fmt_dt(scan.scanned_at),
+        "cached": scan.cached,
+    }
 
 
 @router.post("/analyze", status_code=202)

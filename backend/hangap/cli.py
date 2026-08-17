@@ -62,6 +62,9 @@ def build_parser() -> _ArgumentParser:
     p.add_argument("--to", dest="window_to", metavar="TIME", default=None,
                     help="分析対象期間の終了（YYYY-MM-DD HH:MM または ISO8601、TZ 無し）。"
                          "この時点でゼロが続く区間は「継続中」になる")
+    p.add_argument("--site", dest="sites", metavar="SITE", action="append", default=[],
+                    help="対象サイト（site_id または site_name）。複数指定可。"
+                         "省略するとログに含まれるすべてのサイトが対象")
     p.add_argument("--min-zero-samples", type=int,
                     default=detector.DEFAULT_MIN_ZERO_SAMPLES)
     p.add_argument("--min-zero-duration", metavar="DURATION", default=None,
@@ -261,6 +264,8 @@ def run_analyze(args: argparse.Namespace) -> int:
             analysis.parse_time(args.window_from, "--from") if args.window_from else None
         ),
         window_end=analysis.parse_time(args.window_to, "--to") if args.window_to else None,
+        # --site を 1 つも指定しなければ None（= すべてのサイト）
+        sites=tuple(args.sites) if args.sites else None,
         min_zero_samples=args.min_zero_samples,
         min_zero_duration=(
             analysis.parse_duration(args.min_zero_duration, "--min-zero-duration")

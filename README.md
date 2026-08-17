@@ -335,6 +335,34 @@ python -m hangap analyze /path/to/logs --out ./out \
     --truncated-warn-ratio 0.3 --explain AP04
 ```
 
+### Choosing which sites to analyse
+
+`--site <site_id|site_name>` (repeatable) limits the analysis to those sites; omitting it covers
+every site in the logs. The selection is applied in the loader, **before** interval estimation
+and detection, so the report and the result describe the same data. Derived columns do not move
+when a site is selected: the site-wide trend (`退場疑い`) is aggregated per `site_name` and the
+nearby-AP verdict per `map_id`, both of which are already site-scoped. `ap_events` is not
+filtered — events are matched per AP by name, so other sites' events cannot reach the result.
+A site that is not in the logs is an input error naming the sites that were not found. The
+selected sites are recorded in the analysis conditions, so a saved result still says what it
+covered. On the Hang AP page the run button stays disabled until a site (or "all sites") is
+chosen — the point of the selection is to stop other sites' intervals from padding the table, so
+nothing is analysed implicitly. When the logs hold a single site it is selected automatically.
+
+`GET /api/hangap/sites` lists the sites the logs actually contain — `site_id`, `site_name`, AP
+count and the period covered — so the UI can offer them as choices. It is built **from the logs,
+not from `/api/sites`**: after switching environments `data/logs` still holds sites that are no
+longer monitored, and building the choices from the monitored list would make those logs
+unanalysable. It reads only the four columns it needs from each `ap_metrics` file and caches the
+result in-process (invalidated when a file is added or changed; `?refresh=true` forces a re-read).
+
+```bash
+python -m hangap analyze /path/to/logs --out ./out --site "Head Office" --site "Branch A"
+curl -s localhost:8008/api/hangap/sites
+curl -s -X POST localhost:8008/api/hangap/analyze -H 'Content-Type: application/json' \
+     -d '{"sites": ["<site_id>"]}'
+```
+
 ### "No data at all" is not "nothing detected"
 
 If the loader reads **zero `ap_metrics` rows**, the run is an error — `analyze` exits with code 1
@@ -375,7 +403,7 @@ curl -s -G 'localhost:8008/api/hangap/jobs/<job_id>/result' \
   --data-urlencode 'filter=連続ゼロ回数:min:5' --data-urlencode 'filter=退場疑い:is:true'
 ```
 
-The request body accepts the same conditions as the CLI (`from`, `to`, `min_zero_samples`,
+The request body accepts the same conditions as the CLI (`from`, `to`, `sites`, `min_zero_samples`,
 `min_zero_duration`, `event_window_minutes`, `exodus_threshold`, `gap_factor`, `neighbor_count`,
 `max_distance_m`, `neighbor_client_threshold`, `truncated_warn_ratio`); every field is optional
 and the defaults are the CLI's own. Both paths call `hangap.analysis`, so the downloaded files

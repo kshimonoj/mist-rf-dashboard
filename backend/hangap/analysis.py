@@ -71,6 +71,14 @@ class UnclassifiedInputError(AnalysisError):
     """入力ファイルの種別を判定できなかった。"""
 
 
+class SiteNotFoundError(AnalysisError):
+    """指定されたサイトがログに存在しない。``missing`` にその一覧を持つ。"""
+
+    def __init__(self, message: str, missing: Sequence[str] = ()) -> None:
+        super().__init__(message)
+        self.missing = tuple(missing)
+
+
 class NoMetricsError(AnalysisError):
     """ap_metrics を1行も読み込めなかった。
 
@@ -90,6 +98,8 @@ class AnalysisParams:
 
     window_start: pd.Timestamp | None = None
     window_end: pd.Timestamp | None = None
+    #: 対象サイト（site_id または site_name）。None は「すべてのサイト」
+    sites: tuple[str, ...] | None = None
     min_zero_samples: int = detector.DEFAULT_MIN_ZERO_SAMPLES
     min_zero_duration: pd.Timedelta | None = None
     event_window: pd.Timedelta = field(
@@ -193,7 +203,24 @@ def fmt_td(td: pd.Timedelta) -> str:
     return f"{total:g}s"
 
 
-def condition_text(params: AnalysisParams, n_files: int) -> str:
+#: サイトを絞らなかったときの表記
+ALL_SITES_TEXT: str = "すべて"
+
+
+def fmt_sites(sites: Sequence[str] | None) -> str:
+    """対象サイトの表記。指定なし（None）は「すべて」。"""
+    if sites is None:
+        return ALL_SITES_TEXT
+    return ", ".join(sites) if sites else ALL_SITES_TEXT
+
+
+def condition_text(params: AnalysisParams, n_files: int, sites_text: str | None = None) -> str:
+    """分析条件のテキスト。
+
+    :param sites_text: 実際に対象となったサイトの表記（ローダが解決したラベル）。
+        省略時は指定された文字列をそのまま出す。**保存済み結果を後から見たときに
+        「何を対象にした分析か」が分かる必要があるので、必ずここに残すこと。**
+    """
     zero_desc = (
         f"min_zero_duration={fmt_td(params.min_zero_duration)}"
         if params.min_zero_duration is not None
@@ -207,7 +234,8 @@ def condition_text(params: AnalysisParams, n_files: int) -> str:
         else ""
     )
     return (
-        f"分析条件: 窓 {fmt_window(params.window_start, params.window_end)}{window_note} / "
+        f"分析条件: 対象サイト={sites_text if sites_text is not None else fmt_sites(params.sites)} / "
+        f"窓 {fmt_window(params.window_start, params.window_end)}{window_note} / "
         f"{zero_desc} / "
         f"event_window={fmt_td(params.event_window)} / exodus_threshold={params.exodus_threshold} / "
         f"gap_factor={params.gap_factor} / 入力ファイル数={n_files} / "
@@ -282,10 +310,18 @@ class AnalysisResult:
     def all_warnings(self) -> list[str]:
         return list(self.report.warnings) + self.detector_warnings + self.quality_warnings
 
+    @property
+    def sites_text(self) -> str:
+        """実際に対象となったサイトの表記（ローダが site_id へ解決したラベル）。"""
+        sf = self.report.site_filter
+        if sf is None:
+            return ALL_SITES_TEXT
+        return ", ".join(sf.labels) if sf.labels else fmt_sites(self.params.sites)
+
     def meta(self, title: str = "ハングAP分析結果") -> Meta:
         return Meta(
             title=title,
-            condition_text=condition_text(self.params, self.n_files),
+            condition_text=condition_text(self.params, self.n_files, self.sites_text),
             coverage_and_warnings_text=coverage_and_warnings_text(
                 self.report, self.detector_warnings, self.quality_warnings
             ),
@@ -303,6 +339,7 @@ def run_analysis(
 
     :raises UnclassifiedInputError: 入力ファイルの種別を判定できなかった
     :raises NoMetricsError: ap_metrics を 1 行も読み込めなかった（検出0件とは別）
+    :raises SiteNotFoundError: 指定されたサイトがログに存在しない
     """
     p = params or AnalysisParams()
 
@@ -311,10 +348,18 @@ def run_analysis(
             on_phase(name)
 
     phase(PHASE_LOADING)
-    load_result = loader.load(list(files), gap_factor=p.gap_factor)
+    load_result = loader.load(
+        list(files),
+        gap_factor=p.gap_factor,
+        sites=list(p.sites) if p.sites is not None else None,
+    )
     report = load_result.report
 
-    if report.metrics_rows == 0:
+    # 「ログが無い」と「指定したサイトが無い」を取り違えないよう、まず絞り込む前の
+    # 行数で判定する（サイト指定が無ければ絞り込み前後で同じ値）。
+    site_filter = report.site_filter
+    rows_before = site_filter.rows_before if site_filter else report.metrics_rows
+    if rows_before == 0:
         if report.unclassified:
             sample = ", ".join(report.unclassified[:5])
             more = " ..." if len(report.unclassified) > 5 else ""
@@ -327,6 +372,15 @@ def run_analysis(
             f"（走査ファイル数={report.files_scanned}）。"
             "分析対象のログが存在しないか、保存期間の設定で削除された可能性があります。"
             "これは「ハングが検出されなかった（0 件）」とは別の状態です。"
+        )
+
+    if site_filter is not None and site_filter.missing:
+        available = ", ".join(site_filter.available)
+        raise SiteNotFoundError(
+            "指定されたサイトがログに見つかりません: "
+            f"{', '.join(site_filter.missing)}"
+            f"（ログに含まれるサイト: {available or 'なし'}）",
+            missing=site_filter.missing,
         )
 
     # 近傍AP のインデックスは検出と explain で共有する（座標は AP の最新行から 1 度だけ取る）

@@ -871,10 +871,43 @@ export function hangapFilterSpecs(filters: HangapFilters): string[] {
   return specs;
 }
 
+/**
+ * 分析対象の選択肢になるサイト。**`data/logs` に実際に含まれるサイト**であり、
+ * `/api/sites`（現在の監視対象）とは別物。環境を切り替えると、監視していない
+ * サイトのログが残ることがある。
+ */
+export interface HangapLogSite {
+  site_id: string;
+  site_name: string;
+  ap_count: number;
+  rows: number;
+  files: number;
+  /** ログ中の時刻表記そのまま（タイムゾーンなし） */
+  first: string | null;
+  last: string | null;
+}
+
+export interface HangapLogSites {
+  sites: HangapLogSite[];
+  files_scanned: number;
+  metrics_files: number;
+  scanned_at: string | null;
+  /** キャッシュを返したか（再取得ボタンの結果を判断するため） */
+  cached: boolean;
+}
+
+export async function fetchHangapLogSites(refresh = false): Promise<HangapLogSites> {
+  const res = await fetch(`${API_BASE}/api/hangap/sites${refresh ? "?refresh=true" : ""}`);
+  if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP sites error ${res.status}`);
+  return res.json();
+}
+
 /** 分析条件。未指定（undefined）の項目は送らず、バックエンドの既定値に任せる。 */
 export interface HangapAnalyzeBody {
   from?: string;
   to?: string;
+  /** 対象サイトの site_id。**省略するとすべてのサイトが対象**（明示的に選んだときだけ送る） */
+  sites?: string[];
   min_zero_samples?: number;
   event_window_minutes?: number;
   exodus_threshold?: number;

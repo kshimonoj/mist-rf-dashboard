@@ -7,9 +7,10 @@ import {
 import { useEffect, useState } from "react";
 import useSWR from "swr";
 import {
-  deleteHangapSavedResult, fetchHangapJob, fetchHangapSavedResults,
+  deleteHangapSavedResult, fetchHangapJob, fetchHangapLogSites, fetchHangapSavedResults,
   getHangapSavedDownloadUrl, startHangapAnalysis,
-  HangapAnalyzeBody, HangapJob, HangapPhase, HangapSavedResult, HangapSummary,
+  HangapAnalyzeBody, HangapJob, HangapLogSite, HangapLogSites, HangapPhase,
+  HangapSavedResult, HangapSummary,
 } from "@/lib/api";
 import HangapResultTable from "@/app/components/HangapResultTable";
 import ThemeToggle from "@/app/components/ThemeToggle";
@@ -97,6 +98,146 @@ function formatBreakdown(counts: Record<string, number>): string {
     .filter(([, n]) => n > 0)
     .map(([name, n]) => `${name} ${n}`);
   return parts.length ? parts.join(" / ") : "-";
+}
+
+/**
+ * 対象サイトの選択。**未選択（null）では分析を実行しない。**
+ * 指定漏れによる情報過多を防ぐのが目的なので、暗黙に全サイトを対象にしない。
+ * `"all"` は「すべてのサイト」を明示的に選んだ状態。
+ */
+type SiteSelection = "all" | string[] | null;
+
+const siteLabel = (site: HangapLogSite) => site.site_name || site.site_id;
+
+/** 「AP 4 台 / 2026-08-15 20:06 〜 21:56」。どれを選ぶべきか判断するための情報 */
+function siteDetail(site: HangapLogSite): string {
+  const range = formatDataRange([site.first, site.last]);
+  return `AP ${site.ap_count} 台` + (range ? ` / ${range}` : "");
+}
+
+function SiteSelect({
+  sites, loading, value, onChange, onRefresh,
+}: {
+  sites: HangapLogSite[] | undefined;
+  loading: boolean;
+  value: SiteSelection;
+  onChange: (next: SiteSelection) => void;
+  onRefresh: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const list = sites ?? [];
+
+  const summary = (() => {
+    if (value === "all") return "すべてのサイト";
+    if (value === null || value.length === 0) return "選択してください";
+    if (value.length === 1) {
+      const hit = list.find((s) => s.site_id === value[0]);
+      return hit ? siteLabel(hit) : value[0];
+    }
+    return `${value.length} サイトを選択`;
+  })();
+
+  const toggle = (siteId: string) => {
+    const current = Array.isArray(value) ? value : [];
+    onChange(
+      current.includes(siteId)
+        ? current.filter((id) => id !== siteId)
+        : [...current, siteId]
+    );
+  };
+
+  const rowStyle = (selected: boolean) =>
+    selected
+      ? { borderColor: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }
+      : { borderColor: "var(--chart-grid)" };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 mt-1 px-2 py-1.5 rounded border text-sm w-72 text-left"
+        style={{
+          borderColor: value === null ? "var(--yellow)" : "var(--chart-grid)",
+          backgroundColor: "var(--bg-primary)",
+          color: value === null ? "var(--text-muted)" : "var(--text-primary)",
+        }}
+      >
+        <span className="truncate">{loading && !sites ? "読み込み中..." : summary}</span>
+        <ChevronDown className="w-4 h-4 ml-auto shrink-0" />
+      </button>
+
+      {open && (
+        <>
+          {/* 外側のクリックで閉じる */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div
+            className="absolute z-50 mt-1 w-96 max-h-80 overflow-y-auto p-2 border rounded-lg shadow-lg"
+            style={cardStyle}
+          >
+            <div className="flex items-center gap-2 px-1 pb-2">
+              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                収集済みログに含まれるサイト（監視対象の一覧ではありません）
+              </span>
+              <button
+                onClick={onRefresh}
+                className="ml-auto flex items-center gap-1 px-1.5 py-0.5 border rounded text-[10px]"
+                style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
+              >
+                <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
+                再取得
+              </button>
+            </div>
+
+            <button
+              onClick={() => onChange("all")}
+              className="w-full text-left px-2 py-1.5 mb-1 rounded border text-xs"
+              style={rowStyle(value === "all")}
+            >
+              <span style={{ color: "var(--text-primary)" }}>すべてのサイト</span>
+              <span className="block text-[10px]" style={{ color: "var(--text-muted)" }}>
+                {list.length} サイト / AP {list.reduce((n, s) => n + s.ap_count, 0)} 台
+              </span>
+            </button>
+
+            {list.length === 0 && (
+              <p className="px-2 py-3 text-xs" style={{ color: "var(--text-muted)" }}>
+                {loading ? "読み込み中..." : "ログにサイトが見つかりません"}
+              </p>
+            )}
+
+            {list.map((site) => {
+              const selected = Array.isArray(value) && value.includes(site.site_id);
+              return (
+                <label
+                  key={site.site_id}
+                  className="flex items-start gap-2 px-2 py-1.5 mb-1 rounded border text-xs cursor-pointer"
+                  style={rowStyle(selected)}
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={selected}
+                    onChange={() => toggle(site.site_id)}
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate" style={{ color: "var(--text-primary)" }}>
+                      {siteLabel(site)}
+                    </span>
+                    <span
+                      className="block text-[10px] font-mono"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {siteDetail(site)}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function Stat({ label, value, color }: { label: string; value: string | number; color?: string }) {
@@ -462,6 +603,7 @@ export default function HangApPage() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [advanced, setAdvanced] = useState<Record<AdvancedKey, string>>(EMPTY_ADVANCED);
+  const [siteSelection, setSiteSelection] = useState<SiteSelection>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [jobId, setJobId] = useState<string | null>(null);
@@ -473,6 +615,17 @@ export default function HangApPage() {
 
   /** 保存済み結果を表示中ならその 1 件（分析直後の結果とは同時に出さない） */
   const [viewingSaved, setViewingSaved] = useState<HangapSavedResult | null>(null);
+
+  /** 対象サイトの選択肢。**ログから作る**（現在の監視対象からではない） */
+  const {
+    data: logSites, isLoading: sitesLoading, error: sitesError, mutate: mutateSites,
+  } = useSWR<HangapLogSites>("hangap-log-sites", () => fetchHangapLogSites());
+
+  // 選択肢が 1 つしかない環境では、利用者が意識せずに済むよう自動で選択済みにする
+  useEffect(() => {
+    if (siteSelection !== null || !logSites) return;
+    if (logSites.sites.length === 1) setSiteSelection([logSites.sites[0].site_id]);
+  }, [logSites, siteSelection]);
 
   // 画面を離れてもジョブはサーバ側で走り続ける。戻ってきたら拾い直す
   useEffect(() => {
@@ -563,6 +716,9 @@ export default function HangApPage() {
     setViewingSaved(null);
     try {
       const body: HangapAnalyzeBody = {};
+      // 「すべてのサイト」は sites を送らない（バックエンドの既定が全サイト）。
+      // 未選択のまま実行はできない（ボタンを押せない）ので、ここでは分岐しない。
+      if (Array.isArray(siteSelection)) body.sites = siteSelection;
       // datetime-local の値（"2026-08-15T20:00"）は API がそのまま受け付ける
       // ISO8601（TZ なし）。**変換を挟まないこと。** ログの時刻は naive なので、
       // UTC などへ直すと窓がずれる。
@@ -605,6 +761,9 @@ export default function HangApPage() {
 
   const running = job?.status === "running";
   const btnStyle = { borderColor: "var(--border-cyan)", color: "var(--cyan)" };
+
+  /** 対象サイトを選ぶまで分析は実行できない（暗黙に全サイトを対象にしない） */
+  const siteReady = siteSelection === "all" || (Array.isArray(siteSelection) && siteSelection.length > 0);
 
   return (
     <main className="min-h-screen p-6">
@@ -662,16 +821,39 @@ export default function HangApPage() {
               style={{ borderColor: "var(--chart-grid)", backgroundColor: "var(--bg-primary)", color: "var(--text-primary)" }}
             />
           </label>
+          <label className="text-xs" style={{ color: "var(--text-muted)" }}>
+            サイト
+            <SiteSelect
+              sites={logSites?.sites}
+              loading={sitesLoading}
+              value={siteSelection}
+              onChange={setSiteSelection}
+              onRefresh={() => mutateSites(fetchHangapLogSites(true))}
+            />
+          </label>
           <button
             onClick={handleRun}
-            disabled={running || starting}
+            disabled={running || starting || !siteReady}
             className="flex items-center gap-2 px-4 py-2 border rounded-lg text-sm transition-all disabled:opacity-40"
             style={btnStyle}
+            title={siteReady ? undefined : "対象サイトを選んでください"}
           >
             <Play className="w-4 h-4" />
             {running ? "実行中..." : "分析を実行"}
           </button>
         </div>
+
+        {sitesError && (
+          <p className="text-xs mt-2" style={{ color: "var(--red)" }}>
+            サイト一覧を取得できませんでした（
+            {sitesError instanceof Error ? sitesError.message : String(sitesError)}）
+          </p>
+        )}
+        {!siteReady && !sitesError && (
+          <p className="text-xs mt-2" style={{ color: "var(--yellow)" }}>
+            対象サイトを選ぶと分析を実行できます。全サイトを対象にする場合は「すべてのサイト」を選んでください。
+          </p>
+        )}
 
         {/* プリセット。値を入れるだけで、分析は実行しない */}
         <div className="flex flex-wrap items-center gap-2 mt-3">
