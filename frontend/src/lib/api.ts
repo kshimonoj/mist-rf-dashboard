@@ -801,13 +801,74 @@ export interface HangapJob {
 /** 結果セルの値。時刻はログ由来の naive な文字列（UTC 変換はしない）。 */
 export type HangapCell = string | number | boolean | null;
 
+/** 列ごとの絞り込みの入力方法。**フロントで列を分類し直さない**（API が返すものを使う） */
+export type HangapColumnKind = "text" | "enum" | "number" | "time" | "bool";
+
+/**
+ * 結果テーブルの 1 ページ。実行中ジョブの結果（jobs/{id}/result）と
+ * 保存済み結果（results/{name}/rows）で**同じ形**が返る。
+ */
 export interface HangapResultPage {
-  job_id: string;
+  /** 実行中ジョブの結果なら job_id、保存済み結果なら null */
+  job_id: string | null;
+  /** 保存済み結果なら保存名、実行中ジョブの結果なら null */
+  name: string | null;
   total: number;
   offset: number;
   limit: number;
   columns: string[];
+  column_kinds: Record<string, HangapColumnKind>;
+  /** 値の選択で絞り込む列 → 選択肢（バックエンドの STATUS_ORDER / VERDICT_ORDER） */
+  enum_choices: Record<string, string[]>;
   rows: Record<string, HangapCell>[];
+}
+
+/**
+ * 列ごとの絞り込み条件。**絞り込みはサーバ側で適用する**（ページングと併用するため、
+ * 表示中のページだけをクライアントで絞ってはいけない）。
+ */
+export type HangapFilter =
+  | { kind: "text"; text: string }
+  | { kind: "enum"; values: string[] }
+  | { kind: "number"; min: string; max: string }
+  | { kind: "time"; from: string; to: string }
+  | { kind: "bool"; value: boolean | null };
+
+/** 列名 → 条件。複数列は AND で結合される（サーバ側の仕様）。 */
+export type HangapFilters = Record<string, HangapFilter>;
+
+/** 値が入っていて実際に絞り込みが効く条件か */
+export function isHangapFilterActive(f: HangapFilter | undefined): boolean {
+  if (!f) return false;
+  switch (f.kind) {
+    case "text": return f.text.trim() !== "";
+    case "enum": return f.values.length > 0;
+    case "number": return f.min.trim() !== "" || f.max.trim() !== "";
+    case "time": return f.from.trim() !== "" || f.to.trim() !== "";
+    case "bool": return f.value !== null;
+  }
+}
+
+/** 条件を API の `filter=列名:演算子:値` に直す（空の値は送らない） */
+export function hangapFilterSpecs(filters: HangapFilters): string[] {
+  const specs: string[] = [];
+  for (const [column, f] of Object.entries(filters)) {
+    const push = (op: string, value: string) => {
+      const v = value.trim();
+      if (v !== "") specs.push(`${column}:${op}:${v}`);
+    };
+    switch (f.kind) {
+      case "text": push("contains", f.text); break;
+      // 同じ列の複数指定は OR（サーバ側で束ねる）
+      case "enum": for (const v of f.values) push("in", v); break;
+      case "number": push("min", f.min); push("max", f.max); break;
+      case "time": push("from", f.from); push("to", f.to); break;
+      case "bool":
+        if (f.value !== null) specs.push(`${column}:is:${f.value ? "true" : "false"}`);
+        break;
+    }
+  }
+  return specs;
 }
 
 /** 分析条件。未指定（undefined）の項目は送らず、バックエンドの既定値に任せる。 */
@@ -869,19 +930,34 @@ export async function fetchHangapJob(jobId: string): Promise<HangapJob | null> {
   return res.json();
 }
 
-export async function fetchHangapResult(
-  jobId: string,
-  opts: { offset?: number; limit?: number; status?: string; sort?: string; order?: "asc" | "desc" } = {}
-): Promise<HangapResultPage> {
+/** 結果テーブルの取得条件（実行中ジョブ / 保存済み結果で共通） */
+export interface HangapRowsQuery {
+  offset?: number;
+  limit?: number;
+  sort?: string;
+  order?: "asc" | "desc";
+  filters?: HangapFilters;
+}
+
+function hangapRowsQuery(opts: HangapRowsQuery): string {
   const qs = new URLSearchParams();
   if (opts.offset) qs.set("offset", String(opts.offset));
   if (opts.limit) qs.set("limit", String(opts.limit));
-  if (opts.status) qs.set("status", opts.status);
   if (opts.sort) {
     qs.set("sort", opts.sort);
     qs.set("order", opts.order ?? "asc");
   }
-  const res = await fetch(`${API_BASE}/api/hangap/jobs/${jobId}/result?${qs.toString()}`);
+  for (const spec of hangapFilterSpecs(opts.filters ?? {})) qs.append("filter", spec);
+  return qs.toString();
+}
+
+export async function fetchHangapResult(
+  jobId: string,
+  opts: HangapRowsQuery = {}
+): Promise<HangapResultPage> {
+  const res = await fetch(
+    `${API_BASE}/api/hangap/jobs/${jobId}/result?${hangapRowsQuery(opts)}`
+  );
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP result error ${res.status}`);
   return res.json();
 }
@@ -891,8 +967,8 @@ export const getHangapDownloadUrl = (jobId: string, format: "xlsx" | "csv") =>
   `${API_BASE}/api/hangap/jobs/${jobId}/download?format=${format}`;
 
 // ── 保存済みの分析結果（data/hangap_results） ─────────────────────────────────
-// 分析が done で完了すると自動で保存される（保存ボタンは無い）。結果テーブルの
-// 再表示はしない（ダウンロードで足りる）。
+// 分析が done で完了すると自動で保存される（保存ボタンは無い）。結果テーブルは
+// results/{name}/rows で読み戻して画面に再表示できる（再分析はしない）。
 
 /** 1 組（xlsx / csv / json）の概要。値は保存時の json をそのまま返したもの。 */
 export interface HangapSavedResult {
@@ -921,6 +997,22 @@ export async function fetchHangapSavedResults(): Promise<HangapSavedResult[]> {
   const res = await fetch(`${API_BASE}/api/hangap/results`);
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP results error ${res.status}`);
   return (await res.json()).results;
+}
+
+/**
+ * 保存済み結果の行。`fetchHangapResult` と同じ形が返るので、表示は同じ
+ * コンポーネントで行う（**別実装を作らないこと**）。ダウンロードは常に全行・全列で、
+ * ここでの絞り込みの影響を受けない。
+ */
+export async function fetchHangapSavedRows(
+  name: string,
+  opts: HangapRowsQuery = {}
+): Promise<HangapResultPage> {
+  const res = await fetch(
+    `${API_BASE}/api/hangap/results/${encodeURIComponent(name)}/rows?${hangapRowsQuery(opts)}`
+  );
+  if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP saved rows error ${res.status}`);
+  return res.json();
 }
 
 export const getHangapSavedDownloadUrl = (name: string, format: "xlsx" | "csv") =>

@@ -10,8 +10,13 @@ History Log は 1 時間単位のため、任意の時間帯を分析するに�
 
   1. データ開始が window_start より後（指定した期間の一部にデータが無い）
   2. データ終端が window_end に届いていない（しきい値 log_save_interval）
-  3. イベント終端が window_end + event_window に届いていない
-     （しきい値 log_save_interval + event_window）
+  3. イベントの収集がメトリクスより遅れている
+     （``メトリクス終端 - イベント終端`` > log_save_interval）
+
+3 は以前「イベント終端が window_end + event_window に届いているか」で判定していたが、
+「最後のイベントの時刻」は収集の新しさを表さない（イベントは疎なので、収集が健全でも
+最後のイベントが数時間前になる）。収集が追いついているのに警告が出ていたため、
+メトリクス終端とのラグで判定するよう変えた。
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ import warnings
 from datetime import datetime, timedelta
 
 import _synth as S
+import pandas as pd
 
 from hangap.detector import detect
 from hangap.loader import load
@@ -120,24 +126,6 @@ def test_warns_when_data_does_not_reach_window_end(tmp_path):
     assert any("window_end" in m and "届いていません" in m and "継続中" in m for m in messages)
 
 
-def test_warns_when_events_do_not_cover_window_end_plus_event_window(tmp_path):
-    """イベントが window_end + event_window + しきい値 を大幅に超えて遅れていれば警告する。"""
-    rows = _rows(20)  # メトリクス自体は window_end を十分カバーする
-    window_end = START + timedelta(seconds=INTERVAL * 15)
-    events = [S.event_row(START)]  # window_end よりずっと手前
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        run(
-            tmp_path, rows, events=events,
-            window_start=SAFE_START, window_end=window_end,
-            event_window=timedelta(minutes=30),
-        )
-
-    messages = [str(w.message) for w in caught]
-    assert any("event_window" in m and "イベント" in m and "届いていません" in m for m in messages)
-
-
 def test_no_window_end_means_no_end_coverage_warning(tmp_path):
     """window_end を省略した場合は、右端カバレッジの警告そのものが発生しない。"""
     rows = _rows(4)  # 意図的にごく短いデータ
@@ -197,39 +185,30 @@ def test_window_start_warning_is_unaffected_by_log_save_interval(tmp_path):
     assert any("window_start" in m and "より後から" in m for m in messages)
 
 
-def test_no_warning_when_event_deficit_is_below_log_save_interval(tmp_path):
-    """イベント側の不足が小さければ（しきい値を大幅に下回る）警告しない。"""
-    rows = _rows(20)  # メトリクス自体は window_end を十分カバーする
-    window_end = START + timedelta(seconds=INTERVAL * 15)
-    event_window = timedelta(minutes=30)
-    required = window_end + event_window
-    events = [S.event_row(required - timedelta(minutes=20))]  # 不足20分 < 90分
+# ---------------------------------------------------------------------------
+# イベントのラグ（メトリクス終端 - イベント終端）
+# ---------------------------------------------------------------------------
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        run(
-            tmp_path, rows, events=events,
-            window_start=SAFE_START, window_end=window_end,
-            event_window=event_window,
-            log_save_interval=timedelta(minutes=60),
-        )
+#: _rows(20) のメトリクス終端（START + 95min）
+DATA_END_20 = START + timedelta(seconds=INTERVAL * 19)
 
 
-def test_no_warning_when_event_deficit_is_below_log_save_interval_plus_event_window(tmp_path):
-    """イベント側のしきい値は log_save_interval + event_window。
+def test_no_warning_when_event_lag_is_within_log_save_interval(tmp_path):
+    """イベントのラグがログ保存間隔未満なら警告しない（収集は追いついている）。
 
-    要求ライン自体が window_end + event_window のため、data_max 側と同じ
-    log_save_interval だけをしきい値にすると、収集が追いついていても event_window 分
-    だけ過検知してしまう。実データで観測した状態（window_end 08:32 / event_window 30分 /
-    イベント終端 07:49 → 不足1時間13分、だがメトリクス終端は07:56で収集は追いついている）
-    を模した合成データで、しきい値90分（60分+30分）未満なら警告しないことを確認する。
+    実データで観測した状態を模した合成データ。メトリクス終端との差が 52 分しかないのに、
+    旧基準（イベント終端が window_end + event_window に届いているか）では不足
+    1 時間 39 分として警告が出ていた。イベントは疎なので「最後のイベントの時刻」は
+    収集の新しさを表さず、その警告は収集が正常でも鳴っていた。
+
+    ここでは旧基準なら鳴る（不足 99 分 >= しきい値 90 分）条件のまま、
+    新基準では 1 件も警告が出ないことを確認する。
     """
-    rows = _rows(20)  # メトリクス自体は window_end を十分カバーする
-    window_end = START + timedelta(seconds=INTERVAL * 15)
+    rows = _rows(20)  # メトリクス終端は START + 95min
     event_window = timedelta(minutes=30)
-    required = window_end + event_window
-    # 不足80分: log_save_interval(60分)は超えるが、log_save_interval + event_window(90分)未満
-    events = [S.event_row(required - timedelta(minutes=80))]
+    # データ終端の 17 分先（log_save_interval 未満なのでデータ終端側の警告も出ない）
+    window_end = DATA_END_20 + timedelta(minutes=17)
+    events = [S.event_row(DATA_END_20 - timedelta(minutes=52))]  # ラグ52分 < 60分
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -241,22 +220,62 @@ def test_no_warning_when_event_deficit_is_below_log_save_interval_plus_event_win
         )
 
 
-def test_warns_when_event_deficit_exceeds_log_save_interval_plus_event_window(tmp_path):
-    """イベント側の不足が log_save_interval + event_window 以上なら、これまでどおり警告する。"""
+def test_warns_when_event_lag_exceeds_log_save_interval(tmp_path):
+    """イベントのラグがログ保存間隔を超えたら警告する（収集が止まっている疑い）。"""
     rows = _rows(20)
-    window_end = START + timedelta(seconds=INTERVAL * 15)
-    event_window = timedelta(minutes=30)
-    required = window_end + event_window
-    events = [S.event_row(required - timedelta(minutes=120))]  # 不足120分 >= 90分
+    events = [S.event_row(DATA_END_20 - timedelta(minutes=75))]  # ラグ75分 > 60分
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         run(
             tmp_path, rows, events=events,
-            window_start=SAFE_START, window_end=window_end,
-            event_window=event_window,
+            window_start=SAFE_START, window_end=DATA_END_20,
             log_save_interval=timedelta(minutes=60),
         )
 
     messages = [str(w.message) for w in caught]
-    assert any("event_window" in m and "イベント" in m and "届いていません" in m for m in messages)
+    assert any("イベントの収集がメトリクスより" in m and "遅れています" in m for m in messages)
+    # window_end を基準にした表現は使わない（何が起きているかが分からない）
+    assert not any("event_window" in m for m in messages)
+
+
+def test_event_lag_warning_does_not_depend_on_window_end(tmp_path):
+    """ラグの判定は窓と無関係（window_end を省略しても出る）。"""
+    rows = _rows(20)
+    events = [S.event_row(DATA_END_20 - timedelta(minutes=75))]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run(
+            tmp_path, rows, events=events,
+            window_start=None, window_end=None,
+            log_save_interval=timedelta(minutes=60),
+        )
+
+    assert any("イベントの収集がメトリクスより" in str(w.message) for w in caught)
+
+
+def test_no_event_lag_warning_when_metrics_are_empty():
+    """メトリクスが 1 件も無ければ、このラグ警告は出さない（比較対象が無い）。
+
+    ローダを通さず detect() を直接呼ぶ（ap_metrics が 0 行のログは load() が
+    そもそも受け付けない）。イベントだけがある状態を作る。
+    """
+    metrics = pd.DataFrame(
+        {c: pd.Series(dtype="object") for c in
+         ("ap_id", "ap_name", "site_name", "timestamp", "num_clients", "status")}
+    )
+    events = pd.DataFrame({
+        "ap_name": ["TEST-AP-01"],
+        "event_timestamp": [pd.Timestamp(START)],
+        "event_type": ["AP_CONFIG_CHANGED"],
+    })
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = detect(
+            metrics, events, None,
+            window_end=START + timedelta(days=7),
+            log_save_interval=timedelta(minutes=60),
+        )
+    assert len(result) == 0

@@ -30,7 +30,7 @@ import pandas as pd
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from hangap import analysis, archive
+from hangap import analysis, archive, table
 from hangap.detector import RESULT_COLUMNS
 from utils import fmt_dt
 
@@ -551,6 +551,75 @@ def _rows_to_json(df: pd.DataFrame) -> list[dict[str, Any]]:
     ]
 
 
+def _select_rows(
+    df: pd.DataFrame,
+    *,
+    offset: int,
+    limit: int,
+    status: str | None,
+    sort: str | None,
+    order: str,
+    filters: list[str],
+) -> tuple[int, pd.DataFrame]:
+    """絞り込み → 並び替え → 切り出し。**絞り込みはサーバ側で行う**（ページングと併用するため）。
+
+    実行中ジョブの結果でも保存済み結果でも同じ関数を通す（同じ指定が同じように効くこと）。
+    ダウンロードはここを通らないので、絞り込みの影響を受けない。
+    """
+    if status is not None:
+        if status not in analysis.STATUS_ORDER:
+            raise _bad_request(
+                "status", f"次のいずれかで指定してください: {', '.join(analysis.STATUS_ORDER)}"
+            )
+        df = df[df["回復状況"] == status]
+
+    try:
+        parsed = table.parse_filters(filters)
+    except table.FilterError as e:
+        raise _bad_request(e.field_name, str(e)) from None
+    df = table.apply_filters(df, parsed)
+
+    if sort is not None:
+        if sort not in RESULT_COLUMNS:
+            raise _bad_request("sort", f"結果に無い列です: {sort!r}")
+        if order not in ("asc", "desc"):
+            raise _bad_request("order", f"asc / desc で指定してください: {order!r}")
+        df = df.sort_values(
+            sort, ascending=(order == "asc"), kind="stable", na_position="last"
+        )
+
+    return len(df), df.iloc[offset:offset + limit]
+
+
+def _rows_response(
+    page: pd.DataFrame,
+    total: int,
+    *,
+    job_id: str | None,
+    name: str | None,
+    offset: int,
+    limit: int,
+) -> dict[str, Any]:
+    """結果テーブルのレスポンス。**実行中ジョブと保存済み結果で同じ形にすること。**
+
+    フロントは同じコンポーネントで両方を表示するため、ここで形が分かれると
+    表示側に分岐が増える。``job_id`` / ``name`` は出どころを示すだけで、
+    どちらか一方が null になる。
+    """
+    return {
+        "job_id": job_id,
+        "name": name,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "columns": list(RESULT_COLUMNS),
+        # 列ごとの絞り込みの入力方法。フロントで列の性質を定義し直さないために返す
+        "column_kinds": dict(table.COLUMN_KINDS),
+        "enum_choices": {col: list(v) for col, v in table.ENUM_CHOICES.items()},
+        "rows": _rows_to_json(page),
+    }
+
+
 def _job_state(job: _Job) -> dict[str, Any]:
     return {
         "job_id": job.job_id,
@@ -622,6 +691,11 @@ def get_job_result(
     status: str | None = Query(None, description="回復状況で絞り込む"),
     sort: str | None = Query(None, description="並び替える列（RESULT_COLUMNS のいずれか）"),
     order: str = Query("asc", description="asc | desc"),
+    filters: list[str] = Query(
+        default_factory=list,
+        alias="filter",
+        description="列ごとの絞り込み（列名:演算子:値）。複数指定は AND",
+    ),
 ):
     """結果テーブルを返す。列は detector.RESULT_COLUMNS と同一・同順。"""
     _sweep()
@@ -637,33 +711,13 @@ def get_job_result(
             },
         )
 
-    df = job.result
-    if status is not None:
-        if status not in analysis.STATUS_ORDER:
-            raise _bad_request(
-                "status", f"次のいずれかで指定してください: {', '.join(analysis.STATUS_ORDER)}"
-            )
-        df = df[df["回復状況"] == status]
-
-    if sort is not None:
-        if sort not in RESULT_COLUMNS:
-            raise _bad_request("sort", f"結果に無い列です: {sort!r}")
-        if order not in ("asc", "desc"):
-            raise _bad_request("order", f"asc / desc で指定してください: {order!r}")
-        df = df.sort_values(
-            sort, ascending=(order == "asc"), kind="stable", na_position="last"
-        )
-
-    total = len(df)
-    page = df.iloc[offset:offset + limit]
-    return {
-        "job_id": job.job_id,
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "columns": list(RESULT_COLUMNS),
-        "rows": _rows_to_json(page),
-    }
+    total, page = _select_rows(
+        job.result,
+        offset=offset, limit=limit, status=status, sort=sort, order=order, filters=filters,
+    )
+    return _rows_response(
+        page, total, job_id=job.job_id, name=None, offset=offset, limit=limit
+    )
 
 
 @router.get("/jobs/{job_id}/download")
@@ -728,6 +782,49 @@ def _result_name(name: str) -> str:
 def list_saved_results():
     """保存済みの分析結果を新しい順で返す（各要素は添えた json の内容 + サイズ）。"""
     return {"results": archive.list_results(RESULTS_DIR)}
+
+
+@router.get("/results/{name}/rows")
+def get_saved_result_rows(
+    name: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(DEFAULT_RESULT_LIMIT, ge=1, le=MAX_RESULT_LIMIT),
+    status: str | None = Query(None, description="回復状況で絞り込む"),
+    sort: str | None = Query(None, description="並び替える列（RESULT_COLUMNS のいずれか）"),
+    order: str = Query("asc", description="asc | desc"),
+    filters: list[str] = Query(
+        default_factory=list,
+        alias="filter",
+        description="列ごとの絞り込み（列名:演算子:値）。複数指定は AND",
+    ),
+):
+    """保存済みの結果を、``jobs/{job_id}/result`` と**同じ形式**で返す。
+
+    保存済みの csv を読んで返すだけで、**再分析はしない**（保存した時点の結果を
+    そのまま見せる）。ページング・ソート・絞り込みも実行中ジョブと同じ実装
+    （:func:`_select_rows`）を通す。
+    """
+    name = _result_name(name)
+    path = archive.member_path(RESULTS_DIR, name, ".csv")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"保存済みの結果が見つかりません: {name}.csv")
+    try:
+        df = table.read_result_csv(path)
+    except (OSError, ValueError) as e:
+        logger.warning(f"hangap: 保存済みの csv を読めません: {path.name}: {e}")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"保存済みの結果を読み込めませんでした（{name}.csv）。"
+                "ダウンロードでファイルそのものを確認してください。"
+            ),
+        ) from None
+
+    total, page = _select_rows(
+        df,
+        offset=offset, limit=limit, status=status, sort=sort, order=order, filters=filters,
+    )
+    return _rows_response(page, total, job_id=None, name=name, offset=offset, limit=limit)
 
 
 @router.get("/results/{name}/download")

@@ -312,7 +312,6 @@ def _warn_insufficient_coverage(
     events: pd.DataFrame | None,
     window_start: pd.Timestamp | None,
     window_end: pd.Timestamp | None,
-    event_window: pd.Timedelta,
     log_save_interval: pd.Timedelta,
 ) -> None:
     """読み込んだデータが窓に対して足りない場合に警告する（エラーにはしない）。
@@ -326,26 +325,27 @@ def _warn_insufficient_coverage(
     「指定した期間の一部にそもそもデータが無い」という別の問題（データ開始が window_start
     より後）だけである。窓の先頭の件は分析条件の説明として出す（:func:`analysis.condition_text`）。
 
-    window_end 側（データ終端 / イベント終端）は、不足が仕様どおりの遅延の範囲内なら警告しない。
+    window_end 側（データ終端）は、不足が仕様どおりの遅延の範囲内なら警告しない。
     ログ保存は毎正時のため、window_end を現在時刻にすると必ず最大 1 保存間隔分のずれが生じる。
     これは取りこぼしではなく、毎回鳴る警告は読み飛ばされる（本当に取りこぼしがあるときの
-    警告まで無視されるようになる）。
-
-    - データ終端側のしきい値は ``log_save_interval`` そのもの。
-    - イベント終端側は要求ライン自体が ``window_end + event_window`` なので、
-      ``log_save_interval`` に加えて ``event_window`` 分もしきい値に上乗せする
-      （そうしないと、収集は追いついているのに event_window の分だけ余分に警告が出る）。
-
-    .. note::
-       イベント側の警告は原理的に近似でしかない。「最後のイベントの時刻」を「収集が
-       どこまで進んだか」の代理指標にしているが、イベントは疎（実環境で 11 日間に 55 件）
-       なので、収集が健全でも最後のイベントが数時間前ということは普通に起こる。しきい値の
-       調整で誤検知の頻度は下げられるが、「イベントが無かった」と「収集が止まった」を
-       区別できるようにはならない。この警告は「イベント相関が薄いかもしれない」程度の
-       参考情報として扱うこと。
+    警告まで無視されるようになる）。しきい値は ``log_save_interval`` そのもの。
 
     window_start 側は「指定した期間の一部にデータが無い」という別種の情報のため、
     ``log_save_interval`` の対象にしない（しきい値はサンプリング間隔）。
+
+    **イベント側は「窓に届いているか」では判定しない。**
+    以前は「イベント終端が ``window_end + event_window`` に届いているか」で見ていたが、
+    「最後のイベントの時刻」は収集の新しさを表さない。イベントは疎であり（実環境で
+    11 日間に 55 件）、収集が健全でも最後のイベントが数時間前になるのは普通に起こる。
+    その指標では「イベントが無かった」と「収集が止まった」を区別できず、収集が
+    追いついているのに警告が出ていた。
+
+    代わりに **メトリクス終端とのラグ**（``データ終端 - イベント終端``）で見る。
+    メトリクスは常に全 AP 分のデータがあるため、その終端は「収集がどこまで進んだか」を
+    正しく表す。イベント収集が止まればメトリクスだけが進んでラグが開く。
+    ラグが ``log_save_interval`` を超えたときだけ警告する。比較対象が無い
+    （メトリクスが 1 件も無い）場合はこの警告を出さない。窓の指定とは無関係な
+    「収集が止まっていないか」の話なので、``window_end`` の有無では判定を変えない。
     """
     if prepared.empty:
         return
@@ -365,6 +365,20 @@ def _warn_insufficient_coverage(
                 stacklevel=3,
             )
 
+    # イベントのラグは窓とは無関係（収集が止まっていないかを見る）ので、
+    # window_end の有無に関わらず判定する。
+    if events is not None and len(events) and "event_timestamp" in events.columns:
+        events_max = pd.to_datetime(events["event_timestamp"], errors="coerce").max()
+        if pd.notna(events_max) and pd.notna(data_max):
+            lag = data_max - events_max
+            if lag > log_save_interval:
+                warnings.warn(
+                    f"イベントの収集がメトリクスより {_fmt_timedelta(lag)} 遅れています"
+                    f"（メトリクス終端: {_fmt_ts(data_max)} / イベント終端: {_fmt_ts(events_max)}）。"
+                    "イベントの収集が止まっている可能性があり、区間のイベント相関が欠けることがあります。",
+                    stacklevel=3,
+                )
+
     if window_end is None:
         return
 
@@ -375,22 +389,6 @@ def _warn_insufficient_coverage(
                 f"読み込んだデータは window_end（{_fmt_ts(window_end)}）に届いていません"
                 f"（データ終端: {_fmt_ts(data_max)}、不足 {_fmt_timedelta(deficit)}）。"
                 "窓の右端付近の区間が、実際は回復していても「継続中」と誤分類される可能性があります。",
-                stacklevel=3,
-            )
-
-    if events is not None and len(events) and "event_timestamp" in events.columns:
-        event_ts = pd.to_datetime(events["event_timestamp"], errors="coerce")
-        events_max = event_ts.max()
-        required = window_end + event_window
-        # 要求ライン自体が window_end + event_window なので、しきい値にも event_window を
-        # 上乗せする（データ終端側の log_save_interval だけだと event_window 分だけ過検知する）。
-        event_threshold = log_save_interval + event_window
-        if pd.notna(events_max) and events_max < required and required - events_max >= event_threshold:
-            deficit = required - events_max
-            warnings.warn(
-                f"読み込んだイベントは window_end + event_window（{_fmt_ts(required)}）に"
-                f"届いていません（イベント終端: {_fmt_ts(events_max)}、不足 {_fmt_timedelta(deficit)}）。"
-                "窓の右端付近の区間でイベント相関が欠ける可能性があります。",
                 stacklevel=3,
             )
 
@@ -523,12 +521,11 @@ def detect(
         指定された場合は ``min_zero_samples`` より優先する。
     :param event_window: イベント相関の窓（ゼロ終了 ± この時間）。既定 30 分。
     :param log_save_interval: ログ保存間隔（timedelta / 秒数 / 文字列）。既定 60 分。
-        window_end 側のカバレッジ不足警告のしきい値に使う。ログ保存は毎正時のため、
-        window_end を現在時刻にすると必ずこの分だけデータ終端が届かない
-        （仕様どおりの遅延であり取りこぼしではない）。実際のログ保存間隔が既定と異なる
-        環境では呼び出し側から実際の値を渡すこと。イベント側のしきい値は
-        ``log_save_interval + event_window``（要求ライン自体が window_end + event_window
-        のため）。
+        カバレッジ不足警告のしきい値に使う。ログ保存は毎正時のため、window_end を
+        現在時刻にすると必ずこの分だけデータ終端が届かない（仕様どおりの遅延であり
+        取りこぼしではない）。実際のログ保存間隔が既定と異なる環境では呼び出し側から
+        実際の値を渡すこと。イベント側は「メトリクス終端 - イベント終端」がこの値を
+        超えたときに警告する（イベントの収集が止まっていないかを見る）。
     :param exodus_threshold: 退場疑いのしきい値。サイト全体変化率がこれ以下なら True。
     :param rf_neighbors: ローダの ``rf_neighbors``。``周辺AP RF隣接数``（参考列）の算出に
         しか使わない。**周辺AP判定には一切影響しない。** 省略すればその列が空になるだけ。
@@ -544,9 +541,9 @@ def detect(
     ``window_start`` / ``window_end`` に対して読み込み済みデータが不足している場合
     （History Log の結合漏れ等）は ``UserWarning`` を出す（エラーにはしない）。
     ただし不足が仕様どおりの範囲内なら警告しない（window_start 側はサンプリング間隔未満、
-    データ終端は ``log_save_interval`` 未満、イベント終端は
-    ``log_save_interval + event_window`` 未満）。窓の先頭で始まる区間が検出されないことは
-    仕様であり、警告しない。
+    データ終端は ``log_save_interval`` 未満）。イベント側は窓ではなく
+    「メトリクス終端とのラグ」で判定する（:func:`_warn_insufficient_coverage`）。
+    窓の先頭で始まる区間が検出されないことは仕様であり、警告しない。
     """
     prepared = _prepare_metrics(metrics)
     ws = pd.Timestamp(window_start) if window_start is not None else None
@@ -554,7 +551,7 @@ def detect(
     ev_window = _as_timedelta(event_window)
     log_interval = _as_timedelta(log_save_interval)
     # 警告は「窓に対してデータが足りているか」を見るので、絞り込む前のデータで判定する
-    _warn_insufficient_coverage(prepared, events, ws, we, ev_window, log_interval)
+    _warn_insufficient_coverage(prepared, events, ws, we, log_interval)
     prepared = _apply_window(prepared, ws, we)
 
     boundaries = _gap_boundaries(gaps)

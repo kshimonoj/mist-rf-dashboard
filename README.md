@@ -262,8 +262,15 @@ hourly History Log files), `detect()` emits a `UserWarning` — it never raises 
   period has no samples at all
 - data doesn't reach `window_end` → a trailing interval may be misclassified as "ongoing" when
   it would actually have recovered given more log
-- events don't reach `window_end + event_window` → event correlation near the window's end may
-  be incomplete
+- event collection lags the metrics — `metrics-end − events-end` is greater than
+  `log_save_interval` → event collection may have stopped, so event correlation can be missing
+
+The event check deliberately does **not** ask whether events reach the window. "The time of the
+last event" says nothing about how fresh the collection is: events are sparse (55 in 11 days at
+a real site), so a healthy collection routinely has its last event hours ago, and that test fired
+while collection was perfectly up to date. Comparing against the metrics end works because the
+metrics always have data for every AP, so their end really does mark how far collection got. With
+no metrics at all there is nothing to compare against and the warning is skipped.
 
 ### `min_zero_samples` counts samples, not time
 
@@ -353,6 +360,21 @@ curl -s 'localhost:8008/api/hangap/jobs/<job_id>/download?format=xlsx' -o result
 curl -s -X DELETE localhost:8008/api/hangap/jobs/<job_id>
 ```
 
+Result rows can be filtered per column with repeated `filter=<column>:<operator>:<value>`
+parameters. The operator depends on the column (`hangap.table` classifies every one of the 30
+columns and the response returns that classification as `column_kinds` / `enum_choices`, so the
+UI never redefines it): `contains` for text, `in` for the columns with a fixed set of values
+(repeat it to select several — same column is OR), `min` / `max` for numbers, `from` / `to` for
+timestamps, `is` for booleans. Different columns are AND-ed, and filtering happens server-side so
+it composes with paging and sorting. **Downloads ignore filters entirely** — they return the file
+the analysis wrote, always all rows and all 30 columns.
+
+```bash
+curl -s -G 'localhost:8008/api/hangap/jobs/<job_id>/result' \
+  --data-urlencode 'filter=ap_name:contains:AP-01' --data-urlencode 'filter=回復状況:in:継続中' \
+  --data-urlencode 'filter=連続ゼロ回数:min:5' --data-urlencode 'filter=退場疑い:is:true'
+```
+
 The request body accepts the same conditions as the CLI (`from`, `to`, `min_zero_samples`,
 `min_zero_duration`, `event_window_minutes`, `exodus_threshold`, `gap_factor`, `neighbor_count`,
 `max_distance_m`, `neighbor_client_threshold`, `truncated_warn_ratio`); every field is optional
@@ -367,10 +389,16 @@ three files sharing a timestamp — `hangap_result_<YYYYMMDD_HHMMSS>.{xlsx,csv,j
 and csv are copies of what the job wrote (same bytes as the download); the json holds what the
 filename cannot — interval count, recovery / nearby-AP breakdowns, the analysis conditions,
 warning count and data period. Jobs that end `failed` (timeout, zero `ap_metrics`) archive
-nothing. The Hang AP page lists the sets newest-first with per-set download and delete.
+nothing. The Hang AP page lists the sets newest-first; clicking a row shows that result in the
+same table component the fresh results use — paging, sorting, filtering and column order all
+work, and the page states the save time so a past result is not mistaken for a new one.
+
+`results/<name>/rows` reads the saved csv back — it **never re-runs the analysis** — and returns
+the same shape as `jobs/<job_id>/result`, so the UI needs no branch of its own.
 
 ```bash
 curl -s localhost:8008/api/hangap/results
+curl -s 'localhost:8008/api/hangap/results/hangap_result_20260816_101500/rows?offset=0&limit=100'
 curl -s 'localhost:8008/api/hangap/results/hangap_result_20260816_101500/download?format=xlsx' -o result.xlsx
 curl -s -X DELETE localhost:8008/api/hangap/results/hangap_result_20260816_101500
 ```

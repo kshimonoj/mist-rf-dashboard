@@ -1,17 +1,17 @@
 "use client";
 
 import {
-  AlertTriangle, Archive, ArrowUpDown, ChevronDown, ChevronRight,
-  Download, Play, RefreshCw, Trash2, WifiOff,
+  AlertTriangle, Archive, ChevronDown, ChevronRight, Clock,
+  Download, Eye, Play, RefreshCw, Trash2, WifiOff, X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 import {
-  deleteHangapSavedResult, fetchHangapJob, fetchHangapResult, fetchHangapSavedResults,
-  getHangapDownloadUrl, getHangapSavedDownloadUrl, startHangapAnalysis,
-  HangapAnalyzeBody, HangapCell, HangapJob, HangapPhase, HangapResultPage,
-  HangapSavedResult, HangapSummary,
+  deleteHangapSavedResult, fetchHangapJob, fetchHangapSavedResults,
+  getHangapSavedDownloadUrl, startHangapAnalysis,
+  HangapAnalyzeBody, HangapJob, HangapPhase, HangapSavedResult, HangapSummary,
 } from "@/lib/api";
+import HangapResultTable from "@/app/components/HangapResultTable";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import TabNav from "@/app/components/TabNav";
 import { toLocalString } from "@/lib/time";
@@ -23,26 +23,6 @@ const PHASE_LABELS: Record<HangapPhase, string> = {
   detecting: "検出中",
   writing: "書き出し中",
 };
-
-/**
- * 既定で表示する列。結果は 30 列あり、全部横に並べると読めない。
- * 表示順は API が返す columns（= detector.RESULT_COLUMNS）の順をそのまま使うので、
- * ここは「出すかどうか」だけを決める。ダウンロードは常に全 30 列。
- */
-const DEFAULT_COLUMNS = new Set([
-  "ap_name",
-  "区間番号",
-  "ゼロ直前時刻",
-  "直前clients",
-  "ゼロ開始",
-  "ゼロ終了",
-  "連続ゼロ回数",
-  "回復状況",
-  "直後clients（回復時）",
-  "AP最大clients",
-  "周辺AP判定",
-  "周辺AP端末数合計",
-]);
 
 /**
  * 詳細設定。placeholder は既定値の目安で、**空欄なら送らない**（バックエンドの
@@ -68,7 +48,6 @@ const EMPTY_ADVANCED = Object.fromEntries(
 const POLL_INTERVAL_MS = 2000;
 /** ポーリングを続ける上限。これを過ぎたら止めて「状態を再取得」を出す */
 const POLL_LIMIT_MS = 15 * 60 * 1000;
-const PAGE_SIZE = 100;
 /** 画面を離れて戻ってきたときに実行中のジョブを拾うためのキー */
 const JOB_STORAGE_KEY = "hangap:job_id";
 
@@ -104,11 +83,6 @@ function formatDataRange(period: (string | null)[] | null | undefined): string |
   const last = rawLast.slice(0, 16);
   const sameDay = first.slice(0, 10) === last.slice(0, 10);
   return `${first} 〜 ${sameDay ? last.slice(11) : last}`;
-}
-
-function fmtCell(value: HangapCell): string {
-  if (value === null || value === undefined) return "-";
-  return String(value);
 }
 
 function formatSize(bytes: number): string {
@@ -198,12 +172,126 @@ function DataInfo({ summary }: { summary: HangapSummary }) {
   );
 }
 
+/** 警告。**結果テーブルより上に出す**（前提を知らずに数字だけ見ると誤読する） */
+function Warnings({ warnings }: { warnings: string[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <section
+      className="border rounded-lg p-4 mb-6"
+      style={{ borderColor: "var(--yellow)", backgroundColor: "rgba(255,215,0,0.08)" }}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <AlertTriangle className="w-5 h-5" style={{ color: "var(--yellow)" }} />
+        <p className="text-sm font-semibold" style={{ color: "var(--yellow)" }}>
+          警告 {warnings.length} 件（結果を共有する前に必ず読むこと）
+        </p>
+      </div>
+      <ul className="space-y-1.5">
+        {warnings.map((w) => (
+          <li key={w} className="text-sm flex gap-2" style={{ color: "var(--text-primary)" }}>
+            <span style={{ color: "var(--yellow)" }}>⚠</span>
+            <span>{w}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * 保存済み結果の表示。**結果テーブルは分析直後と同じ HangapResultTable を使う**
+ * （別実装を作らないこと）。サマリーは保存時の json（一覧が返す値）から出す。
+ *
+ * 過去の結果であることが分かるよう、保存日時を明示した帯を必ず上に出す。
+ * 分析直後の結果と取り違えると、いま直った / 直っていないの判断を誤る。
+ */
+function SavedResultView({ row, onClose }: { row: HangapSavedResult; onClose: () => void }) {
+  const { timezone } = useTimezone();
+  const savedAt = row.saved_at ? toLocalString(row.saved_at, timezone) : row.name;
+  const period = (p: (string | null)[] | null) =>
+    p ? `${p[0] ?? "-"} 〜 ${p[1] ?? "-"}` : "（なし）";
+
+  return (
+    <section className="mb-8">
+      <div
+        className="border rounded-lg p-4 mb-4 flex flex-wrap items-center gap-3"
+        style={{ borderColor: "var(--purple)", backgroundColor: "rgba(124,58,237,0.10)" }}
+      >
+        <Clock className="w-5 h-5 shrink-0" style={{ color: "var(--purple)" }} />
+        <div>
+          <p className="text-sm font-semibold" style={{ color: "var(--purple)" }}>
+            保存済みの分析結果を表示しています（保存日時 {savedAt}）
+          </p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>
+            これは過去の結果です。いま実行した分析の結果ではありません（{row.name}）。
+          </p>
+        </div>
+        <button
+          onClick={onClose}
+          className="ml-auto flex items-center gap-1.5 px-3 py-2 border rounded-lg text-sm"
+          style={{ borderColor: "var(--border-cyan)", color: "var(--cyan)" }}
+        >
+          <X className="w-4 h-4" />
+          表示をやめる
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-4">
+        <Stat label="検出区間数" value={row.detected_intervals} color="var(--cyan)" />
+        <Breakdown title="回復状況" counts={row.recovery_status} />
+        <Breakdown title="周辺AP判定" counts={row.neighbor_verdict} />
+        <Stat label="退場疑い" value={row.exodus_suspected} />
+        <Stat label="イベント該当区間" value={row.event_matched_intervals} />
+      </div>
+
+      {/* 保存時の json に入っている範囲のデータ情報（分析直後の「データ情報」より粗い） */}
+      <div className="border rounded-lg p-4 mb-4" style={cardStyle}>
+        <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>
+          データ情報（保存時に記録された分）
+        </p>
+        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+          {([
+            ["metrics 期間", period(row.metrics_period)],
+            ["events 期間", period(row.events_period)],
+            ["AP 台数", String(row.ap_count)],
+            ["ファイル数", String(row.files_scanned)],
+          ] as [string, string][]).map(([label, value]) => (
+            <div key={label} className="flex gap-3">
+              <dt className="shrink-0" style={{ color: "var(--text-muted)" }}>{label}</dt>
+              <dd className="font-mono text-xs pt-0.5" style={{ color: "var(--text-primary)" }}>
+                {value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <span className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>
+          {row.condition_text || "分析条件は記録されていません"}
+        </span>
+      </div>
+
+      <Warnings warnings={row.warnings} />
+
+      {/* key で保存名ごとに状態（ページ・ソート・フィルタ）を作り直す */}
+      <HangapResultTable key={row.name} source={{ kind: "saved", name: row.name }} />
+    </section>
+  );
+}
+
 /**
  * 保存済みの分析結果。分析が done で完了すると**サーバ側で自動保存**される
- * （保存ボタンは無い）。ここは一覧・ダウンロード・削除だけを持ち、
- * **結果テーブルの再表示はしない**（ダウンロードで足りる）。
+ * （保存ボタンは無い）。行をクリックすると SavedResultView で画面上に再表示する
+ * （再分析はしない）。
  */
-function SavedResults({ doneJobId }: { doneJobId: string | null }) {
+function SavedResults({
+  doneJobId, viewingName, onView,
+}: {
+  doneJobId: string | null;
+  viewingName: string | null;
+  onView: (row: HangapSavedResult | null) => void;
+}) {
   const { timezone } = useTimezone();
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -227,6 +315,7 @@ function SavedResults({ doneJobId }: { doneJobId: string | null }) {
     setError(null);
     try {
       await deleteHangapSavedResult(row.name);
+      if (viewingName === row.name) onView(null); // 消したものを表示し続けない
       await mutate();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -245,7 +334,7 @@ function SavedResults({ doneJobId }: { doneJobId: string | null }) {
           保存済みの分析結果
         </h2>
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-          分析が完了すると自動で保存されます（古いものから順に整理されます）
+          分析が完了すると自動で保存されます（古いものから順に整理されます）。行をクリックすると画面上に表示します
         </span>
         <button
           onClick={() => mutate()}
@@ -282,7 +371,17 @@ function SavedResults({ doneJobId }: { doneJobId: string | null }) {
             </thead>
             <tbody>
               {data.map((row) => (
-                <tr key={row.name} className="border-b" style={{ borderColor: "var(--chart-grid)" }}>
+                <tr
+                  key={row.name}
+                  className="border-b cursor-pointer"
+                  style={{
+                    borderColor: "var(--chart-grid)",
+                    backgroundColor:
+                      viewingName === row.name ? "rgba(0,212,255,0.08)" : undefined,
+                  }}
+                  onClick={() => onView(row)}
+                  title="クリックするとこの結果を画面上に表示します"
+                >
                   <td className="py-2.5 px-3 whitespace-nowrap font-mono text-xs" style={{ color: "var(--text-primary)" }}>
                     {row.saved_at ? toLocalString(row.saved_at, timezone) : row.name}
                   </td>
@@ -308,7 +407,23 @@ function SavedResults({ doneJobId }: { doneJobId: string | null }) {
                     {formatSize(row.total_bytes)}
                   </td>
                   <td className="py-2.5 px-3">
-                    <div className="flex items-center justify-end gap-2">
+                    {/* 行のクリックは「表示」。ダウンロード・削除には伝播させない */}
+                    <div
+                      className="flex items-center justify-end gap-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        onClick={() => onView(viewingName === row.name ? null : row)}
+                        className="flex items-center gap-1 px-2 py-1 border rounded text-xs"
+                        style={
+                          viewingName === row.name
+                            ? { borderColor: "var(--cyan)", color: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }
+                            : linkStyle
+                        }
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        {viewingName === row.name ? "表示中" : "表示"}
+                      </button>
                       {(["xlsx", "csv"] as const).map((format) => (
                         <a
                           key={format}
@@ -356,11 +471,8 @@ export default function HangApPage() {
   const [pollStopped, setPollStopped] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
-  const [sort, setSort] = useState<string | null>(null);
-  const [order, setOrder] = useState<"asc" | "desc">("asc");
-  const [offset, setOffset] = useState(0);
-  const [showAllColumns, setShowAllColumns] = useState(false);
+  /** 保存済み結果を表示中ならその 1 件（分析直後の結果とは同時に出さない） */
+  const [viewingSaved, setViewingSaved] = useState<HangapSavedResult | null>(null);
 
   // 画面を離れてもジョブはサーバ側で走り続ける。戻ってきたら拾い直す
   useEffect(() => {
@@ -441,16 +553,14 @@ export default function HangApPage() {
     window.localStorage.setItem(JOB_STORAGE_KEY, id);
     setJobId(id);
     setPollStopped(false);
-    setOffset(0);
-    setStatusFilter(null);
-    setSort(null);
-    setOrder("asc");
   };
 
   const handleRun = async () => {
     setStarting(true);
     setStartError(null);
     setConflict(null);
+    // 新しい分析を始めたら保存済み結果の表示はやめる（取り違えを防ぐ）
+    setViewingSaved(null);
     try {
       const body: HangapAnalyzeBody = {};
       // datetime-local の値（"2026-08-15T20:00"）は API がそのまま受け付ける
@@ -492,36 +602,6 @@ export default function HangApPage() {
     const range = formatDataRange(job?.summary?.loader.metrics_period);
     if (range) setDataRange(range);
   }, [job]);
-
-  const { data: page, isLoading: resultLoading } = useSWR<HangapResultPage>(
-    job?.status === "done"
-      ? ["hangap-result", job.job_id, offset, statusFilter, sort, order]
-      : null,
-    () =>
-      fetchHangapResult(job!.job_id, {
-        offset,
-        limit: PAGE_SIZE,
-        status: statusFilter ?? undefined,
-        sort: sort ?? undefined,
-        order,
-      }),
-    { keepPreviousData: true }
-  );
-
-  const columns = useMemo(() => {
-    const all = page?.columns ?? [];
-    return showAllColumns ? all : all.filter((c) => DEFAULT_COLUMNS.has(c));
-  }, [page?.columns, showAllColumns]);
-
-  const toggleSort = (column: string) => {
-    if (sort === column) {
-      setOrder((v) => (v === "asc" ? "desc" : "asc"));
-    } else {
-      setSort(column);
-      setOrder("asc");
-    }
-    setOffset(0);
-  };
 
   const running = job?.status === "running";
   const btnStyle = { borderColor: "var(--border-cyan)", color: "var(--cyan)" };
@@ -739,30 +819,15 @@ export default function HangApPage() {
       )}
 
       {/* 警告（結果テーブルより上に出す。前提を知らずに数字だけ見ると誤読する） */}
-      {job && job.warnings.length > 0 && (
-        <section
-          className="border rounded-lg p-4 mb-6"
-          style={{ borderColor: "var(--yellow)", backgroundColor: "rgba(255,215,0,0.08)" }}
-        >
-          <div className="flex items-center gap-2 mb-2">
-            <AlertTriangle className="w-5 h-5" style={{ color: "var(--yellow)" }} />
-            <p className="text-sm font-semibold" style={{ color: "var(--yellow)" }}>
-              警告 {job.warnings.length} 件（結果を共有する前に必ず読むこと）
-            </p>
-          </div>
-          <ul className="space-y-1.5">
-            {job.warnings.map((w) => (
-              <li key={w} className="text-sm flex gap-2" style={{ color: "var(--text-primary)" }}>
-                <span style={{ color: "var(--yellow)" }}>⚠</span>
-                <span>{w}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+      {job && !viewingSaved && <Warnings warnings={job.warnings} />}
+
+      {/* 保存済み結果を表示中は、分析直後の結果と同時に出さない（取り違えを防ぐ） */}
+      {viewingSaved && (
+        <SavedResultView row={viewingSaved} onClose={() => setViewingSaved(null)} />
       )}
 
       {/* 結果 */}
-      {summary && job && (
+      {!viewingSaved && summary && job && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-4">
             <Stat label="検出区間数" value={summary.detected_intervals} color="var(--cyan)" />
@@ -780,28 +845,6 @@ export default function HangApPage() {
             <span className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>
               {summary.condition_text}
             </span>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 mb-4">
-            <a
-              href={getHangapDownloadUrl(job.job_id, "xlsx")}
-              className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm"
-              style={btnStyle}
-            >
-              <Download className="w-4 h-4" />
-              xlsx ダウンロード
-            </a>
-            <a
-              href={getHangapDownloadUrl(job.job_id, "csv")}
-              className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm"
-              style={btnStyle}
-            >
-              <Download className="w-4 h-4" />
-              csv ダウンロード
-            </a>
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              ダウンロードは常に全 {page?.columns.length ?? 30} 列
-            </span>
             {job.finished_at && (
               <span className="ml-auto text-xs font-mono" style={{ color: "var(--text-muted)" }}>
                 完了 {toLocalString(job.finished_at, timezone)}
@@ -809,121 +852,26 @@ export default function HangApPage() {
             )}
           </div>
 
-          {/* フィルタ・列表示 */}
-          <div className="flex flex-wrap items-center gap-2 mb-3">
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>回復状況:</span>
-            {[null, ...Object.keys(summary.recovery_status)].map((s) => (
-              <button
-                key={s ?? "all"}
-                onClick={() => { setStatusFilter(s); setOffset(0); }}
-                className="px-3 py-1 rounded border text-xs transition-all"
-                style={
-                  statusFilter === s
-                    ? { borderColor: "var(--cyan)", color: "var(--cyan)", backgroundColor: "rgba(0,212,255,0.08)" }
-                    : { borderColor: "var(--chart-grid)", color: "var(--text-muted)" }
-                }
-              >
-                {s ?? "すべて"}
-              </button>
-            ))}
-            <label className="ml-4 flex items-center gap-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-              <input
-                type="checkbox"
-                checked={showAllColumns}
-                onChange={(e) => setShowAllColumns(e.target.checked)}
-              />
-              全列を表示
-            </label>
-            <span className="ml-auto text-xs" style={{ color: "var(--text-muted)" }}>
-              {page ? `${page.total} 件中 ${page.total === 0 ? 0 : offset + 1}–${Math.min(offset + PAGE_SIZE, page.total)} 件` : ""}
-            </span>
-            <button
-              onClick={() => setOffset((v) => Math.max(0, v - PAGE_SIZE))}
-              disabled={offset === 0}
-              className="px-2 py-1 rounded border text-xs disabled:opacity-40"
-              style={{ borderColor: "var(--chart-grid)", color: "var(--text-secondary)" }}
-            >
-              前へ
-            </button>
-            <button
-              onClick={() => setOffset((v) => v + PAGE_SIZE)}
-              disabled={!page || offset + PAGE_SIZE >= page.total}
-              className="px-2 py-1 rounded border text-xs disabled:opacity-40"
-              style={{ borderColor: "var(--chart-grid)", color: "var(--text-secondary)" }}
-            >
-              次へ
-            </button>
-          </div>
-
-          {resultLoading && !page ? (
-            <div className="flex justify-center py-16">
-              <div className="text-sm animate-pulse" style={{ color: "var(--cyan)" }}>Loading result...</div>
-            </div>
-          ) : !page || page.total === 0 ? (
-            <div
-              className="border rounded-lg py-16 text-center text-sm"
-              style={{ ...cardStyle, color: "var(--text-secondary)" }}
-            >
-              {statusFilter ? `「${statusFilter}」の区間はありません` : "検出された区間はありません（0 件）"}
-            </div>
-          ) : (
-            <div className="border rounded-lg overflow-x-auto" style={cardStyle}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left" style={{ borderColor: "var(--chart-grid)" }}>
-                    {columns.map((col) => (
-                      <th
-                        key={col}
-                        className="py-3 px-3 font-normal cursor-pointer select-none whitespace-nowrap"
-                        style={{ color: "var(--text-muted)" }}
-                        onClick={() => toggleSort(col)}
-                      >
-                        <span className="inline-flex items-center gap-1">
-                          {col}
-                          <ArrowUpDown
-                            className="w-3 h-3"
-                            style={{ color: sort === col ? "var(--cyan)" : "var(--text-muted)" }}
-                          />
-                        </span>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {page.rows.map((row, i) => (
-                    <tr
-                      key={`${row["ap_name"]}-${row["区間番号"]}-${offset + i}`}
-                      className="border-b"
-                      style={{ borderColor: "var(--chart-grid)" }}
-                    >
-                      {columns.map((col) => (
-                        <td
-                          key={col}
-                          className="py-2.5 px-3 whitespace-nowrap font-mono text-xs"
-                          style={{ color: "var(--text-primary)" }}
-                        >
-                          {fmtCell(row[col])}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          {/* 結果テーブル（保存済み結果の再表示と同じコンポーネント） */}
+          <HangapResultTable key={job.job_id} source={{ kind: "job", jobId: job.job_id }} />
         </>
       )}
 
-      {!jobId && !startError && (
+      {!jobId && !startError && !viewingSaved && (
         <div
           className="border rounded-lg py-16 text-center text-sm"
           style={{ ...cardStyle, color: "var(--text-muted)" }}
         >
           「分析を実行」を押すと、収集済みのログからハングAPの候補を検出します。
+          過去の結果は下の「保存済みの分析結果」から表示できます。
         </div>
       )}
 
-      <SavedResults doneJobId={job?.status === "done" ? job.job_id : null} />
+      <SavedResults
+        doneJobId={job?.status === "done" ? job.job_id : null}
+        viewingName={viewingSaved?.name ?? null}
+        onView={setViewingSaved}
+      />
     </main>
   );
 }
