@@ -1,6 +1,6 @@
 "use client";
 
-import { History as HistoryIcon, Map, Search, ZapOff } from "lucide-react";
+import { BarChart3, History as HistoryIcon, Map, Search, ZapOff } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -17,6 +17,7 @@ const ROUTE_TABS = [
   { href: "/insights", label: "Insights", icon: <Search className="w-3.5 h-3.5" /> },
   { href: "/history", label: "History", icon: <HistoryIcon className="w-3.5 h-3.5" /> },
   { href: "/hangap", label: "Hang AP", icon: <ZapOff className="w-3.5 h-3.5" /> },
+  { href: "/floorpeak", label: "Floor Peak", icon: <BarChart3 className="w-3.5 h-3.5" /> },
 ] as const;
 
 const tabClass =

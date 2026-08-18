@@ -18,6 +18,8 @@ Wi-Fi issues across all sites.
   history with roaming markers
 - **Floor Map**: Interactive floor plan with AP overlay, channel-based color coding, and
   co-channel interference summary per band
+- **Floor Peak**: pick the busiest moment of a site over a period and chart the top-20 APs by
+  connected clients on each floor (see [Floor Peak Analysis](#floor-peak-analysis-busiest-moment-per-floor))
 
 ![Site Detail with SLE](docs/screenshots/02-site-detail.png)
 
@@ -448,6 +450,110 @@ both limits are met.
 `data/hangap_results/` is excluded from log scanning (`hangap.loader.EXCLUDED_DIR_NAMES`), so an
 archived result is never picked up as input by the next analysis.
 
+## Floor Peak Analysis (busiest moment, per floor)
+
+`backend/floorpeak/` answers a different question from Hang AP: **for one site over a period,
+which moment was the busiest, and which APs on a floor carried the clients at that moment.**
+It reads the same collected CSV logs offline (no network access, no LLM calls) and shares no
+code with `hangap` beyond reusing `hangap.loader` to read `ap_metrics` — the same logs must not
+be parsed two different ways.
+
+### How the peak is chosen
+
+Samples are **bucketed before they are summed**. AP timestamps are nearly aligned in practice but
+carry a few seconds of jitter; summing by raw timestamp makes "the sample where the most APs
+happened to land on the same second" win, which misses the real peak. The bucket width is the
+sampling interval `hangap.loader` estimates (300 s in this deployment); if it cannot be
+estimated, floorpeak falls back to 300 s **and says so in the warnings**. Within a bucket the
+latest row per AP is used, ties on the total pick the **earliest** bucket, and the window is the
+half-open interval `[from, to)`. APs that are down contribute 0 and are not special-cased.
+
+`--at` selects the bucket nearest a given moment instead. If the chosen bucket is further than
+`3 × bucket_seconds` away, that is a warning, not an error. **`--at` ignores `--from` / `--to`**
+(narrowing the window first would pin "the nearest bucket" to the window edge and make the choice
+impossible to explain); the analysis records that they were ignored as a warning.
+
+### How floor names are resolved
+
+`ap_metrics` carries `map_id` but no readable floor name, and its CSV schema is not changed (the
+Hang AP analysis and the pseudonymizer both detect file types by exact header match). Floor names
+come from the hourly `floormap_*_summary.csv`, whose rows are (map_name × band × channel) and
+whose `ap_list` only holds the APs on that band/channel.
+
+1. The **single** `floormap_*_summary.csv` closest to the peak is read (hourly collection means at
+   most ~30 minutes of skew, and floor layout does not change by the minute). Candidates are
+   picked by the filename timestamp and verified by the file's own `timestamp` column.
+2. Rows are filtered by `site_name` (there is no `site_id` in that file), then every `ap_list` is
+   split to build `ap_name → map_name`. **Bands are not filtered** — an AP that only appears on
+   one band would otherwise be dropped.
+3. That mapping is joined against the peak-moment `ap_metrics` to derive `map_id → map_name`, and
+   **each AP's floor is finally decided by its `map_id`.** This is the point of the design: an AP
+   whose radios are all down appears in no `ap_list` at all, yet still lands on the right floor.
+4. One `map_id` pointing at several names takes the majority and warns. An empty or unknown
+   `map_id` becomes `（未割当）` — kept as a floor of its own, never dropped, and counted in a
+   warning. A floormap more than 24 h away from the peak is not used at all: every AP becomes
+   `（未割当）` and the warning says why.
+
+### CLI
+
+```bash
+python -m floorpeak analyze --logs /path/to/logs --site <site_id> \
+  --from '2026-08-18 08:00' --to '2026-08-18 20:00' --out ./out
+python -m floorpeak analyze --logs /path/to/logs --site 'Head Office' \
+  --at '2026-08-18 14:00' --floor 'Head Office 5F' --out ./out
+```
+
+The site is **required and single** — "the peak for the whole site" is undefined across several
+sites. Output is `floorpeak_result_<stamp>.{xlsx,csv}` plus a `_summary.txt`; the csv holds every
+AP of the site (~250 rows), because picking a floor and cutting the top 20 is the display's job,
+not the analysis's. Column names are ASCII (`ap_name, mac, model, num_clients, status, map_id,
+map_name, x_m, y_m, rank_in_floor`) so the result can later be added to the pseudonymizer without
+tripping its non-ASCII leak check. `rank_in_floor` is the per-floor descending order of
+`num_clients`, ties broken by `ap_name` so the order never shuffles between runs.
+
+The xlsx has two sheets. **`chart`** draws the selected floor's top 20 as a horizontal `BarChart`;
+the bars are one series coloured per data point by AP model, and because Excel's own legend cannot
+show model names for a single series, the legend is drawn as filled cells next to the chart.
+**`data`** holds every floor's every row plus the conditions and warnings. Files are not split per
+floor — the sheet states which floor the chart is for.
+
+### API
+
+```bash
+curl -s localhost:8008/api/floorpeak/sites
+curl -s -X POST localhost:8008/api/floorpeak/analyze -H 'Content-Type: application/json' \
+  -d '{"site":"<site_id>","from":"2026-08-18 08:00","to":"2026-08-18 20:00"}'
+curl -s localhost:8008/api/floorpeak/jobs/<job_id>            # status / phase / meta / warnings
+curl -s localhost:8008/api/floorpeak/jobs/<job_id>/result     # rows + meta + warnings
+curl -s 'localhost:8008/api/floorpeak/jobs/<job_id>/download?format=xlsx&floor=<map_name>' -o peak.xlsx
+curl -s localhost:8008/api/floorpeak/results
+curl -s localhost:8008/api/floorpeak/results/floorpeak_result_20260818_140000/rows
+curl -s -X DELETE localhost:8008/api/floorpeak/results/floorpeak_result_20260818_140000
+```
+
+The body takes `site` (required), `from`, `to`, `at`; unknown fields are a 400 rather than a
+silent no-op. One job runs at a time (409 otherwise), results live in the process only, and both
+CLI and API go through `floorpeak.analysis`, so the downloaded csv is byte-for-byte what the CLI
+writes. `?floor=` is the only thing built on the fly — an xlsx chart can only show one floor, so
+the download re-renders that sheet for the floor you are looking at; without it you get the stored
+file. `results/<name>/rows` reads the saved csv and json back and **never re-runs the analysis**,
+returning the same shape as `jobs/<job_id>/result`.
+
+`meta` carries everything needed to read the chart without guessing: site, requested window,
+`selected_by` (`auto` / `manual`), the peak time and the real sample range inside that bucket, the
+site-wide client total, `bucket_seconds`, the floormap file used and how far it is from the peak,
+the floor list, and the model→colour table the UI paints with (defined once, in the backend).
+
+Results are archived to `data/floorpeak_results/` as `floorpeak_result_<YYYYMMDD_HHMMSS>.{xlsx,csv,json}`
+with the same whole-set rotation as Hang AP, driven by its **own** limits so neither analysis can
+rotate the other's records away. `floorpeak_results` is in `hangap.loader.EXCLUDED_DIR_NAMES`, so
+saved results are never read back as input.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FLOORPEAK_RESULTS_MAX_FILES` | `50` | Number of result **sets** to keep (xlsx+csv+json = 1 set) |
+| `FLOORPEAK_RESULTS_MAX_TOTAL_MB` | `500` | Total size cap for `data/floorpeak_results/` |
+
 ## Data Persistence
 
 All data is stored in the `./data/` directory:
@@ -456,6 +562,7 @@ data/
 ├── mist.db           # SQLite database (metrics, settings, credentials, tags, insights)
 ├── logs/             # Auto-saved CSV logs (AP / SLE / client metrics, floor map summary)
 ├── hangap_results/   # Saved hang-AP analysis results (xlsx + csv + json per run, rotated)
+├── floorpeak_results/ # Saved floor-peak analysis results (xlsx + csv + json per run, rotated)
 └── snapshots/        # Snapshot database files (max 2 slots)
 ```
 

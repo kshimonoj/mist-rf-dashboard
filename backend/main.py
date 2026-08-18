@@ -12,7 +12,7 @@ load_dotenv()
 
 from database import Base, SessionLocal, engine, migrate_db
 from models import AppSettings, Credentials
-from routers import aps, clients, credentials, floor_map, hangap, insights, logs, poll, pseudonymize, radio, settings, sites, sle, snapshot_db, snapshots, tags
+from routers import aps, clients, credentials, floor_map, floorpeak, hangap, insights, logs, poll, pseudonymize, radio, settings, sites, sle, snapshot_db, snapshots, tags
 import scheduler as sched_module
 from scheduler import (
     poll_all_sites, poll_clients, prune_old_metrics,
@@ -173,6 +173,7 @@ app.include_router(settings.router)
 app.include_router(credentials.router)
 app.include_router(poll.router)
 app.include_router(hangap.router)
+app.include_router(floorpeak.router)
 app.include_router(pseudonymize.router)
 
 

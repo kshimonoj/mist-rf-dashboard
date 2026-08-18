@@ -1260,3 +1260,219 @@ export async function restorePseudonymized(
   URL.revokeObjectURL(objectUrl);
   return { filename, report };
 }
+
+// ── Floor peak analysis (/api/floorpeak) ─────────────────────────────────────
+// 「その期間で最も混雑した時点」を選び、フロアごとの AP 接続端末数を返す。
+// 列・順位・色分け・トップN の定義は **API が返すものをそのまま使う**。
+// ここで再計算・再整形すると CLI / API / UI で結果が食い違う。
+
+export type FloorPeakStatus = "running" | "done" | "failed";
+export type FloorPeakPhase = "loading" | "peak" | "floors" | "writing";
+
+/** フロアごとの AP 数・端末数（フロア選択の材料）。`（未割当）` は末尾に来る */
+export interface FloorPeakFloor {
+  map_name: string;
+  ap_count: number;
+  num_clients: number;
+}
+
+/**
+ * 分析条件と結果の前提。**グラフ単体で「いつの・どこの・何の値か」が分かること**が
+ * この構造体の目的なので、表示から省かないこと。
+ */
+export interface FloorPeakMeta {
+  version: number;
+  site_id: string;
+  site_name: string;
+  site_label: string;
+  requested_site?: string;
+  window_start: string | null;
+  window_end: string | null;
+  requested_at: string | null;
+  /** "auto"（期間内で最大）/ "manual"（時点を指定） */
+  selected_by: string;
+  peak_time: string | null;
+  peak_sample_first?: string | null;
+  peak_sample_last?: string | null;
+  peak_total_clients: number;
+  manual_offset_seconds?: number | null;
+  bucket_seconds: number | null;
+  bucket_seconds_estimated?: boolean;
+  /** フロア名の出典（floormap_*_summary.csv）とピーク時点とのずれ */
+  floormap_file: string | null;
+  floormap_timestamp?: string | null;
+  floormap_offset_seconds: number | null;
+  ap_count: number;
+  floor_count: number;
+  floors: FloorPeakFloor[];
+  default_floor: string | null;
+  top_n?: number;
+  /** モデル → 棒の色（RRGGBB）。**フロントで色分けを定義し直さない** */
+  model_colors?: Record<string, string>;
+  default_model_color?: string;
+  files_scanned?: number;
+  metrics_rows?: number;
+  condition_text: string;
+  warning_count: number;
+  warnings: string[];
+}
+
+export interface FloorPeakRow {
+  ap_name: string;
+  mac: string;
+  model: string;
+  num_clients: number;
+  status: string;
+  map_id: string;
+  map_name: string;
+  x_m: number | null;
+  y_m: number | null;
+  rank_in_floor: number;
+}
+
+export interface FloorPeakJob {
+  job_id: string;
+  status: FloorPeakStatus;
+  phase: FloorPeakPhase;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  meta: FloorPeakMeta | null;
+  warnings: string[];
+}
+
+/**
+ * 結果。実行中ジョブ（jobs/{id}/result）と保存済み結果（results/{name}/rows）で
+ * **同じ形**が返るので、表示は同じコンポーネントで行う。
+ */
+export interface FloorPeakResult {
+  job_id: string | null;
+  name: string | null;
+  columns: string[];
+  meta: FloorPeakMeta;
+  warnings: string[];
+  rows: FloorPeakRow[];
+}
+
+/** 保存済みの 1 組（xlsx / csv / json）の概要 */
+export interface FloorPeakSavedResult extends FloorPeakMeta {
+  /** floorpeak_result_YYYYMMDD_HHMMSS。表示・ダウンロード・削除のキー */
+  name: string;
+  saved_at: string | null;
+  files: Partial<Record<"xlsx" | "csv" | "json", number>>;
+  total_bytes: number;
+}
+
+/** 分析条件。**site は必須・単一**（サイト全体のピークは複数サイトでは定義できない） */
+export interface FloorPeakAnalyzeBody {
+  site: string;
+  from?: string;
+  to?: string;
+  /** 時点の手動指定。指定すると from / to は無視される（サーバ側の仕様） */
+  at?: string;
+}
+
+export interface FloorPeakStartResult {
+  job_id: string;
+  conflict: boolean;
+  message?: string;
+}
+
+async function floorPeakDetail(res: Response): Promise<string | undefined> {
+  try {
+    const detail = (await res.json()).detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object") return detail.message;
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+/** 分析対象の選択肢。`data/logs` に実際に含まれるサイト（Hang AP と同じ一覧） */
+export async function fetchFloorPeakLogSites(refresh = false): Promise<HangapLogSites> {
+  const res = await fetch(`${API_BASE}/api/floorpeak/sites${refresh ? "?refresh=true" : ""}`);
+  if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak sites error ${res.status}`);
+  return res.json();
+}
+
+export async function startFloorPeakAnalysis(
+  body: FloorPeakAnalyzeBody
+): Promise<FloorPeakStartResult> {
+  const res = await fetch(`${API_BASE}/api/floorpeak/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 409) {
+    let detail: { message?: string; job_id?: string } = {};
+    try { detail = (await res.json()).detail ?? {}; } catch { /* ignore */ }
+    return {
+      job_id: detail.job_id ?? "",
+      conflict: true,
+      message: detail.message ?? "別の分析が実行中です。",
+    };
+  }
+  if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak analyze error ${res.status}`);
+  return { job_id: (await res.json()).job_id, conflict: false };
+}
+
+/** ジョブの状態。破棄済み・TTL 切れ（404）は null を返す。 */
+export async function fetchFloorPeakJob(jobId: string): Promise<FloorPeakJob | null> {
+  const res = await fetch(`${API_BASE}/api/floorpeak/jobs/${jobId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak job error ${res.status}`);
+  return res.json();
+}
+
+export async function fetchFloorPeakResult(jobId: string): Promise<FloorPeakResult> {
+  const res = await fetch(`${API_BASE}/api/floorpeak/jobs/${jobId}/result`);
+  if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak result error ${res.status}`);
+  return res.json();
+}
+
+/** 保存済み結果の行。`fetchFloorPeakResult` と同じ形が返る（表示は同じ実装を使う）。 */
+export async function fetchFloorPeakSavedRows(name: string): Promise<FloorPeakResult> {
+  const res = await fetch(`${API_BASE}/api/floorpeak/results/${encodeURIComponent(name)}/rows`);
+  if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak saved rows error ${res.status}`);
+  return res.json();
+}
+
+/** 新しい順。 */
+export async function fetchFloorPeakSavedResults(): Promise<FloorPeakSavedResult[]> {
+  const res = await fetch(`${API_BASE}/api/floorpeak/results`);
+  if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak results error ${res.status}`);
+  return (await res.json()).results;
+}
+
+export async function deleteFloorPeakSavedResult(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/floorpeak/results/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak delete error ${res.status}`);
+}
+
+/**
+ * ダウンロード。xlsx のグラフは 1 フロア分しか描けないので、**表示中のフロア**を
+ * 渡す（csv は全フロアなのでフロアを渡さない）。
+ */
+export function getFloorPeakDownloadUrl(
+  source: { kind: "job"; jobId: string } | { kind: "saved"; name: string },
+  format: "xlsx" | "csv",
+  floor?: string | null
+): string {
+  const base =
+    source.kind === "job"
+      ? `${API_BASE}/api/floorpeak/jobs/${source.jobId}/download`
+      : `${API_BASE}/api/floorpeak/results/${encodeURIComponent(source.name)}/download`;
+  const qs = new URLSearchParams({ format });
+  if (format === "xlsx" && floor) qs.set("floor", floor);
+  return `${base}?${qs.toString()}`;
+}
+
+/** モデル → 色。辞書に無いモデルは灰色に落とす（実サイトのモデル構成は変わりうる） */
+export function floorPeakModelColor(model: string, meta: FloorPeakMeta): string {
+  const table = meta.model_colors ?? {};
+  const hex = table[(model ?? "").trim().toUpperCase()] ?? meta.default_model_color ?? "9E9E9E";
+  return `#${hex}`;
+}
