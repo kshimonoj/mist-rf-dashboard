@@ -116,7 +116,8 @@ def test_unknown_and_missing_files_are_rejected(client):
 
 def test_limits_endpoint_reports_the_cap(client):
     c, _ = client
-    assert c.get("/api/pseudonymize/limits").json() == {"max_files": service.MAX_FILES}
+    # 復元側の上限も同じエンドポイントで返す（詳細は test_restore_api）
+    assert c.get("/api/pseudonymize/limits").json()["max_files"] == service.MAX_FILES
 
 
 # ---------------------------------------------------------------------------

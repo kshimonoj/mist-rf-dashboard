@@ -4,12 +4,26 @@
 詳細と限界については README.md を参照。
 """
 from .leakcheck import LeakCheckFailed, Violation, check_output
+from .restore import (
+    MissingMaterialError,
+    RestoreEngine,
+    RestoreError,
+    RestoreReport,
+    UnsupportedFormatError,
+    load_engine,
+)
 from .salt import SaltError, SaltMaterial, load_or_create_salt
 from .schemas import FILE_TYPES, FileType, TransformType, detect_file_type
 from .transforms import MappingStore, Pseudonymizer, PseudonymizeError
 
 __all__ = [
     "FILE_TYPES",
+    "MissingMaterialError",
+    "RestoreEngine",
+    "RestoreError",
+    "RestoreReport",
+    "UnsupportedFormatError",
+    "load_engine",
     "FileType",
     "LeakCheckFailed",
     "MappingStore",

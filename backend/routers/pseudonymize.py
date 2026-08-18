@@ -12,19 +12,23 @@
 """
 from __future__ import annotations
 
+import base64
 import io
+import json
 import logging
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 
 from hangap import archive
-from pseudonymizer import service
+from pseudonymizer import restore as restore_mod
+from pseudonymizer import restore_service, service
 from pseudonymizer.cli import CliError
 from pseudonymizer.leakcheck import LeakCheckFailed
+from pseudonymizer.restore import MissingMaterialError, RestoreError, UnsupportedFormatError
 from pseudonymizer.salt import SaltError
 from pseudonymizer.transforms import PseudonymizeError
 from routers import hangap as hangap_router
@@ -34,6 +38,19 @@ router = APIRouter(prefix="/api/pseudonymize", tags=["pseudonymize"])
 logger = logging.getLogger(__name__)
 
 ZIP_NAME = "pseudonymized_logs.zip"
+RESTORE_ZIP_NAME = "restored_files.zip"
+
+#: 復元レポートを載せるヘッダー。値は UTF-8 JSON を base64 にしたもの
+#: （ヘッダーに日本語をそのまま置けないため）。CORS で expose している。
+RESTORE_REPORT_HEADER = "X-Restore-Report"
+
+#: 拡張子 → Content-Type。分からないものはテキスト扱いにする。
+_MEDIA_TYPES = {
+    ".csv": "text/csv; charset=utf-8",
+    ".tsv": "text/tab-separated-values; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
 
 
 def _content_disposition(filename: str) -> str:
@@ -88,9 +105,14 @@ def _zip_response(outputs: list[service.Output]) -> Response:
 
 
 @router.get("/limits")
-def get_limits() -> dict[str, int]:
+def get_limits() -> dict:
     """UI が上限を書き写さなくて済むように返す。"""
-    return {"max_files": service.MAX_FILES}
+    return {
+        "max_files": service.MAX_FILES,
+        "restore_max_files": restore_service.MAX_FILES,
+        "restore_max_upload_bytes": restore_service.MAX_UPLOAD_BYTES,
+        "restore_extensions": sorted(restore_mod.SUPPORTED_EXTENSIONS),
+    }
 
 
 @router.get("/logs")
@@ -155,3 +177,84 @@ def download_pseudonymized_result(
         raise HTTPException(status_code=404, detail=f"保存済みの結果が見つかりません: {name}.csv")
 
     return _csv_response(_run([path])[0])
+
+
+# ---------------------------------------------------------------------------
+# 復元（再識別）
+# ---------------------------------------------------------------------------
+
+
+def _report_header(report: restore_mod.RestoreReport) -> str:
+    """レポートをヘッダーに載せられる形にする（UTF-8 JSON → base64）。"""
+    raw = json.dumps(report.to_json(), ensure_ascii=False).encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _restore_response(
+    outputs: list[restore_service.RestoredFile], report: restore_mod.RestoreReport
+) -> Response:
+    headers = {RESTORE_REPORT_HEADER: _report_header(report)}
+    if len(outputs) == 1:
+        out = outputs[0]
+        headers["Content-Disposition"] = _content_disposition(out.filename)
+        return Response(
+            content=out.content,
+            media_type=_MEDIA_TYPES.get(
+                Path(out.filename).suffix.lower(), "text/plain; charset=utf-8"
+            ),
+            headers=headers,
+        )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for out in outputs:
+            zf.writestr(out.filename, out.content)
+    headers["Content-Disposition"] = _content_disposition(RESTORE_ZIP_NAME)
+    return Response(content=buf.getvalue(), media_type="application/zip", headers=headers)
+
+
+@router.post("/restore")
+async def restore_files(
+    files: list[UploadFile] = File(..., description="復元するファイル（加工後でも可）"),
+    no_time: bool = Query(False, description="時刻を戻さず、識別子だけ戻す"),
+):
+    """アップロードされたファイルを復元して返す（1 件ならそのまま、複数なら ZIP）。
+
+    **返すファイルは実名（AP名・サイト名・MAC・IP・実時刻）を含む。**
+
+    アップロードは一時ディレクトリで処理し、``data/`` 配下には一切書かない。
+    置換件数と「マッピングに無い仮名が残っていないか」は
+    :data:`RESTORE_REPORT_HEADER` に載せて返す。
+    """
+    uploads: list[tuple[str, bytes]] = []
+    total = 0
+    for upload in files:
+        data = await upload.read()
+        total += len(data)
+        if total > restore_service.MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"アップロードできるのは合計 "
+                    f"{restore_service.MAX_UPLOAD_BYTES // (1024 * 1024)}MB までです。"
+                    "ファイルを分けてください。"
+                ),
+            )
+        uploads.append((upload.filename or "", data))
+
+    try:
+        outputs, report = restore_service.restore_uploads(uploads, time_restore=not no_time)
+    except UnsupportedFormatError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    except MissingMaterialError as e:
+        # まだ一度も仮名化していないサーバ、または別環境のファイルを渡された場合。
+        raise HTTPException(
+            status_code=400,
+            detail=f"復元に必要なソルト／マッピングがこのサーバにありません。\n{e}",
+        ) from None
+    except restore_service.RestoreInputError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    except (RestoreError, SaltError, PseudonymizeError) as e:
+        logger.warning("restore: failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"復元に失敗しました: {e}") from None
+
+    return _restore_response(outputs, report)

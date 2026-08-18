@@ -15,6 +15,7 @@ import {
 import ThemeToggle from "@/app/components/ThemeToggle";
 import SaveNowButton from "@/app/components/SaveNowButton";
 import TabNav from "@/app/components/TabNav";
+import RestorePanel from "@/app/components/RestorePanel";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
 
@@ -410,6 +411,9 @@ function CsvLogsTab() {
           合計 {formatSize(totalBytes)}
         </p>
       )}
+
+      {/* 仮名化ダウンロードの裏返し。手元で加工したファイルを元の値に戻す */}
+      <RestorePanel />
 
       {/* フィルター */}
       <div className="border rounded-lg p-4 mb-4 flex flex-wrap gap-4 items-end"

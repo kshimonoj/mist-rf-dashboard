@@ -3,6 +3,7 @@
 使用例:
     python -m pseudonymizer /app/data/logs --out ~/pseudo-logs
     python -m pseudonymizer 'logs/ap_metrics_*.csv' --out out --dry-run
+    python -m pseudonymizer restore merged.csv --out ~/restored   # 復元（再識別）
 """
 from __future__ import annotations
 
@@ -333,6 +334,12 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "restore":
+        # 復元は別のサブコマンド。既定（引数なしのパス指定）は仮名化のまま変えない。
+        from .restore_cli import main as restore_main
+
+        return restore_main(argv[1:])
     args = build_parser().parse_args(argv)
     try:
         return run(args)

@@ -1125,3 +1125,138 @@ export async function downloadPseudonymized(url: string, fallbackName: string): 
   URL.revokeObjectURL(objectUrl);
   return name;
 }
+
+
+// ── 仮名化の復元（/api/pseudonymize/restore） ─────────────────────────────────
+// 加工・統合したあとのファイルは利用者の手元にあるので、復元はアップロードで行う。
+// アップロードされたファイルはサーバの一時ディレクトリで処理し、処理後に削除される。
+//
+// **復元後のファイルは実名を含む。** 導線の近くに必ずこの注意書きを出す。
+
+/** 復元後のファイルが実名を含む旨の注意書き（導線の近くに必ず出す） */
+export const RESTORE_NOTICE =
+  "復元後のファイルは実名（AP名・サイト名・MAC・IP・実時刻）を含みます。" +
+  "仮名化前と同じ扱いが必要です。共有先・保存先に注意してください。";
+
+/** 復元できない値がある旨の注意（vlan_id は仮名が裸の整数のため戻せない） */
+export const RESTORE_LIMITS_NOTICE =
+  "戻せるのはマッピングに記録された値だけです。加工で生まれた集計値や新しいラベルはそのまま通ります。" +
+  "vlan_id は仮名が数値のため復元できません。";
+
+/** アップロードの既定上限（サーバ側の値。/limits で取り直せる） */
+export const RESTORE_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+export interface RestoreResidual {
+  kind: string;
+  column: string;
+  sheet: string;
+  count: number;
+  rows: number[];
+}
+
+export interface RestoreFileReport {
+  source_name: string;
+  filename: string;
+  counts: Record<string, number>;
+  total_replacements: number;
+  residuals: RestoreResidual[];
+  residual_total: number;
+}
+
+export interface RestoreReport {
+  files: RestoreFileReport[];
+  counts: Record<string, number>;
+  residual_total: number;
+}
+
+export interface PseudonymizeLimits {
+  max_files: number;
+  restore_max_files: number;
+  restore_max_upload_bytes: number;
+  restore_extensions: string[];
+}
+
+export const fetchPseudonymizeLimits = (): Promise<PseudonymizeLimits> =>
+  apiFetch<PseudonymizeLimits>("/api/pseudonymize/limits");
+
+/** 置換件数のキー → 表示名（バックエンドの COUNT_LABELS と対にする） */
+export const RESTORE_COUNT_LABELS: Record<string, string> = {
+  AP_NAME: "AP名",
+  AP_MAC: "AP MAC",
+  AP_ID: "AP ID",
+  SITE_NAME: "サイト名",
+  SITE_ID: "サイト ID",
+  MAP_NAME: "フロア名",
+  MAP_ID: "フロア ID",
+  CLIENT_MAC: "クライアント MAC",
+  HOSTNAME: "ホスト名",
+  SSID: "SSID",
+  IP: "IP",
+  TIMESTAMP: "時刻",
+  TIMESTAMP_COMPACT: "時刻（YYYYMMDD_HHMM）",
+  FILENAME: "ファイル名の日付",
+};
+
+/** 残存警告の種類 → 表示名 */
+export const RESTORE_RESIDUAL_LABELS: Record<string, string> = {
+  AP_NAME: "AP名",
+  SITE_NAME: "サイト名",
+  MAP_NAME: "フロア名",
+  HOSTNAME: "ホスト名",
+  SSID: "SSID",
+  MAC: "MAC",
+  UUID: "UUID",
+};
+
+function decodeRestoreReport(res: Response): RestoreReport | null {
+  // レポートはヘッダーに base64(UTF-8 JSON) で載ってくる（本文はファイルそのもの）
+  const raw = res.headers.get("X-Restore-Report");
+  if (!raw) return null;
+  try {
+    const bytes = Uint8Array.from(atob(raw), (ch) => ch.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes)) as RestoreReport;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 仮名化されたファイルをアップロードして復元し、ダウンロードさせる。
+ * 戻り値は (保存したファイル名, 復元レポート)。
+ */
+export async function restorePseudonymized(
+  files: File[],
+  noTime: boolean,
+): Promise<{ filename: string; report: RestoreReport | null }> {
+  const form = new FormData();
+  for (const file of files) form.append("files", file);
+  const res = await fetch(
+    `${API_BASE}/api/pseudonymize/restore?no_time=${noTime ? "true" : "false"}`,
+    { method: "POST", body: form },
+  );
+  if (!res.ok) {
+    let message = `復元に失敗しました（${res.status}）`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") message = body.detail;
+    } catch {
+      /* JSON でなければ既定のメッセージ */
+    }
+    throw new Error(message);
+  }
+  const report = decodeRestoreReport(res);
+  const blob = await res.blob();
+  const filename = filenameFromResponse(
+    res,
+    files.length === 1 ? `restored_${files[0].name}` : "restored_files.zip",
+  );
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+  return { filename, report };
+}

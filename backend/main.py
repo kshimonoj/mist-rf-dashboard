@@ -154,7 +154,8 @@ app.add_middleware(
     allow_headers=["*"],
     # ダウンロードのファイル名をフロントから読めるようにする
     # （仮名化ダウンロードはサーバ側で日付をずらした名前を付ける）
-    expose_headers=["Content-Disposition"],
+    # 復元レポート（置換件数・残存警告）もフロントから読めるようにする
+    expose_headers=["Content-Disposition", "X-Restore-Report"],
 )
 
 app.include_router(sites.router)

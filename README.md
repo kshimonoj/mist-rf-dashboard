@@ -57,7 +57,8 @@ Wi-Fi issues across all sites.
   summary) with manual "Save Now", searchable/filterable History page
 - **Pseudonymized download**: download CSV logs and Hang AP analysis results with AP names,
   site names, MACs, IPs and timestamps consistently replaced — converted on the fly, so no
-  second copy is ever stored (see [Pseudonymized download](#pseudonymized-download))
+  second copy is ever stored, and pseudonymized files can be **restored** afterwards
+  (see [Pseudonymized download](#pseudonymized-download))
 - **Multi-Environment**: register multiple Mist orgs (e.g. per customer/site) and switch between
   them from the GUI — no container restart required
 - **Settings (GUI)**: API credentials, region, polling interval, log retention, timezone, and
@@ -512,6 +513,29 @@ fetched through the log APIs. `data/` is git-ignored, and both filenames are ign
 **If you lose these files there is no recovery.** New files will be created and the same AP will
 get a different pseudonym, so anything you previously shared can no longer be correlated with
 anything you share afterwards. Back them up somewhere safe outside the repository.
+
+### Restoring (re-identification)
+
+Files you pseudonymized, processed locally and merged can be turned back into real values:
+**仮名化を復元** on the History tab (upload the processed files) or
+
+```bash
+cd backend
+python -m pseudonymizer restore merged.csv --out ~/restored
+```
+
+Because the input is an already-processed file, the column whitelist cannot be used; restoring is
+plain text replacement driven by `data/.pseudonym_map.json` (longest pseudonym first, on word
+boundaries) plus the inverse time shift. Values that are not in the mapping — aggregates and labels
+created during processing — pass through unchanged. `vlan_id` cannot be restored: its pseudonym is
+a bare integer that is indistinguishable from real data (pseudonymize with `--keep-vlan` if you
+need it). Every run prints a report with the replacement counts and warns — with counts and
+locations, never values — if pseudonym-looking strings are left over, which is how you notice a
+stale mapping or a file pseudonymized with a different salt.
+
+Uploads are processed in a temporary directory and deleted afterwards; nothing is written under
+`data/`. **The restored file contains real names, MACs, IPs and real timestamps** — handle it the
+same way you would handle the original logs.
 
 Details, the per-column rules and the CLI equivalent: [`backend/pseudonymizer/README.md`](backend/pseudonymizer/README.md).
 
