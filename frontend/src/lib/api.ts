@@ -1302,6 +1302,8 @@ export interface FloorPeakMeta {
   floormap_file: string | null;
   floormap_timestamp?: string | null;
   floormap_offset_seconds: number | null;
+  /** 異常ではなく正常動作の補足（ap_name 経由のフォールバックで解決できた等） */
+  floor_resolution_notes?: string[];
   ap_count: number;
   floor_count: number;
   floors: FloorPeakFloor[];

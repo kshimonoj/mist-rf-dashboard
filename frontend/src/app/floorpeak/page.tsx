@@ -233,6 +233,9 @@ function ConditionPanel({ meta }: { meta: FloorPeakMeta }) {
         : "なし（すべて未割当）",
     ],
     ["対象AP数 / フロア数", `${meta.ap_count} 台 / ${meta.floor_count} フロア`],
+    ...(meta.floor_resolution_notes && meta.floor_resolution_notes.length > 0
+      ? ([["フロア解決の補足", meta.floor_resolution_notes.join(" / ")]] as [string, string][])
+      : []),
   ];
   return (
     <div className="border rounded-lg p-4" style={cardStyle}>

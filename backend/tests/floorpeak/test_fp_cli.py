@@ -130,6 +130,19 @@ def test_at_overrides_the_window(tmp_path, capsys):
     assert "期間の指定は無視" in printed
 
 
+def test_condition_text_separates_scanned_and_used_file_counts(tmp_path, capsys):
+    """「入力ファイル数」は走査対象の総数ではなく、実際に使った ap_metrics 本数を出す。"""
+    logs = write_logs(tmp_path / "logs")
+    out = tmp_path / "out"
+    assert _run(["analyze", "--logs", str(logs), "--site", S.SITE_ID, "--out", str(out)]) == cli.EXIT_OK
+
+    # write_logs は ap_metrics 1 本 + floormap_summary 1 本の計 2 本を書く
+    printed = capsys.readouterr().out
+    assert "走査ファイル数=2" in printed
+    assert "使用ap_metricsファイル数=1" in printed
+    assert "入力ファイル数=" not in printed
+
+
 def test_unknown_floor_is_rejected(tmp_path):
     logs = write_logs(tmp_path / "logs")
     out = tmp_path / "out"
@@ -163,9 +176,15 @@ def test_xlsx_has_chart_and_data_sheets(tmp_path):
     assert charts[0].series[0].data_points[0].graphicalProperties.solidFill is not None
 
     data = wb["data"]
-    # 1〜3 行目がメタ、5 行目がヘッダー、6 行目以降が全フロアの全行
-    assert [c.value for c in data[5]] == list(analysis.RESULT_COLUMNS)
-    assert data.max_row == 5 + 3
+    # 1〜2 行目がメタ、4 行目がヘッダー、5 行目以降が全フロアの全行
+    assert [c.value for c in data[4]] == list(analysis.RESULT_COLUMNS)
+    assert data.max_row == 4 + 3
+    # 分析条件は完全版が data シートに 1 セルだけ入る（A2 の重複を削除済み）
+    condition_cells = [
+        c for row in data.iter_rows(max_row=data.max_row, max_col=1) for c in row
+        if c.value and "分析条件:" in str(c.value)
+    ]
+    assert len(condition_cells) == 1
 
 
 def test_xlsx_chart_floor_can_be_chosen(tmp_path):
@@ -180,6 +199,37 @@ def test_xlsx_chart_floor_can_be_chosen(tmp_path):
     ws = load_workbook(next(out.glob("*.xlsx")))["chart"]
     assert S.FLOOR_2F in str(ws.cell(row=4, column=1).value)
     assert len(ws._charts[0].series[0].data_points) == 1
+
+
+def test_chart_legend_swatches_are_colored(tmp_path):
+    """凡例（A7, A8, ...）の塗りつぶしが、対応する DataPoint の色と一致すること。"""
+    logs = write_logs(tmp_path / "logs")
+    out = tmp_path / "out"
+    assert _run(["analyze", "--logs", str(logs), "--site", S.SITE_ID, "--out", str(out)]) == cli.EXIT_OK
+
+    wb = load_workbook(next(out.glob("*.xlsx")))
+    ws = wb["chart"]
+    chart = ws._charts[0]
+
+    # 6 行目は見出し、7 行目以降が凡例（モデル名は B 列）
+    legend = {}
+    row = 7
+    while ws.cell(row=row, column=2).value:
+        model = ws.cell(row=row, column=2).value
+        legend[model] = ws.cell(row=row, column=1).fill.fgColor.rgb
+        row += 1
+    assert legend, "凡例が 1 件も無い"
+
+    # top のモデル順（A45 は 9 台で 1 位、A63E は 5 台で 2 位）
+    top_models = [analysis.model_color(m) for m in ("AP45", "AP63E")]
+    dp_colors = [dp.graphicalProperties.solidFill.srgbClr for dp in chart.series[0].data_points]
+    assert dp_colors == top_models
+
+    for model, cell_rgb in legend.items():
+        expected = analysis.model_color(model)
+        assert cell_rgb == f"FF{expected}", f"{model} の凡例色見本が塗られていない"
+        # DataPoint 側と同じ色（同一の model_color() から取っていること）
+        assert cell_rgb[-6:] == expected
 
 
 def test_unknown_model_falls_back_to_grey(tmp_path):

@@ -26,6 +26,8 @@ from openpyxl.chart.marker import DataPoint
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from hangap import loader as hangap_loader
+
 from . import floors, loader, peak as peak_mod
 from .floors import UNASSIGNED
 
@@ -171,9 +173,34 @@ def floor_sort_key(map_name: str) -> tuple[int, str]:
 
 
 def model_color(model: object) -> str:
-    """モデル名 → 棒の色。**辞書に無いモデルでも落ちないこと**（灰色に落とす）。"""
+    """モデル名 → 棒の色（RRGGBB）。**辞書に無いモデルでも落ちないこと**（灰色に落とす）。"""
     key = ("" if model is None else str(model)).strip().upper()
     return MODEL_COLORS.get(key, DEFAULT_MODEL_COLOR)
+
+
+def _cell_argb(rgb: str) -> str:
+    """セルの塗りつぶし用に ARGB（不透明）へ変換する。
+
+    ``PatternFill`` に 6 桁の RGB をそのまま渡すと openpyxl が alpha を
+    ``00``（完全透明）で補って塗りが見えなくなる。セルの塗りは常にこれを通すこと。
+    グラフの ``DataPoint.solidFill`` は別のカラー型（alpha 無し）なので対象外。
+    """
+    return f"FF{rgb}"
+
+
+def used_metrics_files(report: hangap_loader.LoadReport) -> int:
+    """実際に ap_metrics として読み込んで分析に使ったファイル数。
+
+    ``report.files_scanned`` はサイト・期間で絞る前の走査対象の総数（ログ
+    ディレクトリ全体）で、``ap_metrics`` はそのうちのごく一部でしかない。
+    ここでは ``file_stats`` から ap_metrics / ap_metrics_v1 として識別できた
+    ファイル数だけを合計する（読み手が「入力ファイル数」を見て誤解しないため）。
+    """
+    return sum(
+        report.file_stats[t].files
+        for t in loader.METRICS_FILE_TYPES
+        if t in report.file_stats
+    )
 
 
 def condition_text(
@@ -181,6 +208,7 @@ def condition_text(
     n_files: int,
     site_label: str,
     peak: peak_mod.PeakResult,
+    metrics_file_count: int,
 ) -> str:
     """分析条件のテキスト。
 
@@ -198,7 +226,8 @@ def condition_text(
         f"分析条件: 対象サイト={site_label} / {window} / "
         f"ピーク時刻={fmt_dt(peak.peak_bucket)}（{how}・selected_by={peak.selected_by}） / "
         f"サイト合計端末数={peak.peak_total_clients} / "
-        f"bucket_seconds={peak.bucket_seconds:g} / 入力ファイル数={n_files}"
+        f"bucket_seconds={peak.bucket_seconds:g} / "
+        f"走査ファイル数={n_files} / 使用ap_metricsファイル数={metrics_file_count}"
     )
 
 
@@ -308,7 +337,12 @@ def build_rows(ap_rows: pd.DataFrame, resolution: floors.FloorResolution) -> pd.
         "x_m": pd.to_numeric(ap_rows.get("x_m"), errors="coerce"),
         "y_m": pd.to_numeric(ap_rows.get("y_m"), errors="coerce"),
     })
-    df["map_name"] = [resolution.floor_of(v) for v in ap_rows.get("map_id", pd.Series(dtype=str))]
+    df["map_name"] = [
+        resolution.floor_of(map_id, ap_name)
+        for map_id, ap_name in zip(
+            ap_rows.get("map_id", pd.Series(dtype=str)), ap_rows.get("ap_name", pd.Series(dtype=str))
+        )
+    ]
 
     df = df.sort_values(["map_name", "num_clients", "ap_name"], ascending=[True, False, True], kind="stable")
     df["rank_in_floor"] = df.groupby("map_name", sort=False).cumcount() + 1
@@ -386,6 +420,8 @@ def build_meta(
         "floormap_file": resolution.source_file,
         "floormap_timestamp": _dt_or_none(resolution.source_timestamp),
         "floormap_offset_seconds": resolution.offset_seconds,
+        #: 異常ではなく正常動作の補足（ap_name 経由のフォールバックで解決できた等）
+        "floor_resolution_notes": list(resolution.notes),
         "ap_count": int(len(rows)),
         "floor_count": int(rows["map_name"].nunique()) if not rows.empty else 0,
         "floors": floor_summary(rows),
@@ -397,7 +433,9 @@ def build_meta(
         "files_scanned": int(loaded.report.files_scanned),
         "metrics_rows": int(loaded.report.metrics_rows),
         "rows_in_window": int(len(loaded.metrics)),
-        "condition_text": condition_text(params, n_files, site_label, peak),
+        "condition_text": condition_text(
+            params, n_files, site_label, peak, used_metrics_files(loaded.report)
+        ),
         "warning_count": len(warnings),
         "warnings": list(warnings),
     }
@@ -431,6 +469,8 @@ def summary_text(meta: dict[str, Any]) -> str:
         )
     else:
         lines.append(f"フロア名の出典: なし（すべての AP を「{UNASSIGNED}」として扱いました）")
+    if meta.get("floor_resolution_notes"):
+        lines.extend(f"  ℹ {n}" for n in meta["floor_resolution_notes"])
     if meta.get("warnings"):
         lines.append(f"警告 {len(meta['warnings'])} 件:")
         lines.extend(f"  ⚠ {w}" for w in meta["warnings"])
@@ -540,7 +580,7 @@ def _write_chart_sheet(ws, rows: pd.DataFrame, meta: dict[str, Any], target: str
     models = list(dict.fromkeys(str(m) for m in top["model"])) if not top.empty else []
     ws.cell(row=6, column=1, value="凡例（モデル）").font = _HEADER_FONT
     for i, model in enumerate(models):
-        color = model_color(model)
+        color = _cell_argb(model_color(model))
         swatch = ws.cell(row=7 + i, column=1, value=None)
         swatch.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
         ws.cell(row=7 + i, column=2, value=model or "(不明)")
@@ -592,12 +632,17 @@ def _write_chart_sheet(ws, rows: pd.DataFrame, meta: dict[str, Any], target: str
 
 
 def _write_data_sheet(ws, rows: pd.DataFrame, meta: dict[str, Any]) -> None:
-    ws.cell(row=1, column=1, value="フロア別ピーク時点分析（全フロア）").font = _TITLE_FONT
-    ws.cell(row=2, column=1, value=meta["condition_text"])
-    c3 = ws.cell(row=3, column=1, value=summary_text(meta))
-    c3.alignment = Alignment(wrap_text=True, vertical="top")
+    """全フロアの全行 + メタ情報を出す。
 
-    header_row = 5
+    分析条件は :func:`summary_text` の完全版（condition_text を含む）だけを
+    1 セルに置く。以前は A2 に condition_text 単体、A3 に summary_text（同じ
+    condition_text を先頭に含む完全版）と重複して入っていた
+    """
+    ws.cell(row=1, column=1, value="フロア別ピーク時点分析（全フロア）").font = _TITLE_FONT
+    c2 = ws.cell(row=2, column=1, value=summary_text(meta))
+    c2.alignment = Alignment(wrap_text=True, vertical="top")
+
+    header_row = 4
     for col, name in enumerate(RESULT_COLUMNS, start=1):
         ws.cell(row=header_row, column=col, value=name).font = _HEADER_FONT
     for r, row in enumerate(rows.itertuples(index=False, name=None), start=header_row + 1):

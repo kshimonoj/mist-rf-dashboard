@@ -1,4 +1,4 @@
-"""フロア名の解決（``floormap_*_summary.csv`` → ``map_id`` → フロア名）。
+"""フロア名の解決（``floormap_*_summary.csv`` → ``map_id`` / ``ap_name`` → フロア名）。
 
 **なぜ ap_metrics だけでは足りないか**
 
@@ -7,7 +7,7 @@
 仮名化がヘッダー完全一致で種別を判定しているため **変更しない**。フロア名は
 毎正時に収集している ``floormap_*_summary.csv`` から解決する。
 
-**なぜ最後は map_id で判定するか**
+**なぜ最優先は map_id で判定するか**
 
 ``floormap_summary`` の 1 行は (map_name × band × channel) 単位で、``ap_list`` は
 その band/channel に載っている AP だけを含む。全無線が停止している AP は
@@ -15,6 +15,16 @@
 フロアに載らない。``ap_list`` からはまず ``map_id → map_name`` の対応を作り、
 **個々の AP のフロアは ap_metrics の map_id で決める**。こうすると、
 無線が止まっていて floormap に出てこない AP も正しいフロアに載る。
+
+**なぜ ap_name 経由のフォールバックが要るか**
+
+座標列（``map_id`` / ``x_m`` / ``y_m``）を追加する前の 33 列版 ``ap_metrics``
+（``ap_metrics_v1``）は ``map_id`` を持たない。この期間がピークに選ばれると
+map_id 判定だけでは全 AP が未割当になってしまうが、``ap_list`` から作った
+``ap_name → map_name`` の対応表そのものは ``map_id`` を必要としない。そこで
+map_id で引けない AP は ``ap_name`` で直接引く（:meth:`FloorResolution.floor_of`）。
+判定順は必ず「map_id → ap_name → 未割当」。map_id を先に試すのは、上記の
+「全無線停止 AP を救う」利点を失わないため。
 
 ``floormap_ap_detail`` は定期収集されていない（単発の手動エクスポートのみ）ため、
 任意時点の解決には使えない。
@@ -61,6 +71,9 @@ class FloorResolution:
 
     #: ``map_id`` → フロア名。ここに無い map_id は :data:`UNASSIGNED` になる
     map_id_to_name: dict[str, str] = field(default_factory=dict)
+    #: ``ap_name`` → フロア名（``floormap_summary`` の ``ap_list`` から直接引く）。
+    #: ``map_id`` で引けない AP（33 列版 ap_metrics 等）のフォールバックに使う
+    ap_name_to_floor: dict[str, str] = field(default_factory=dict)
     #: 使った floormap ファイル名（解決できなければ None）
     source_file: str | None = None
     #: そのファイルの中身の timestamp
@@ -68,13 +81,32 @@ class FloorResolution:
     #: ピーク時点とのずれ（秒）。**必ず表示する**（古い構成で見ている可能性がある）
     offset_seconds: float | None = None
     warnings: list[str] = field(default_factory=list)
+    #: 異常ではなく正常動作の補足（例: ap_name 経由のフォールバックで解決できた）。
+    #: **警告とは別チャンネル**（毎回・条件次第で起きるだけなので、警告として
+    #: 目立たせると本当に読むべき警告が埋もれる）
+    notes: list[str] = field(default_factory=list)
 
-    def floor_of(self, map_id: object) -> str:
-        """AP のフロア名。``map_id`` が空・未知なら :data:`UNASSIGNED`。"""
+    def floor_of(self, map_id: object, ap_name: object = None) -> str:
+        """AP のフロア名。
+
+        判定順（必ずこの順）:
+
+        1. ``map_id`` → :attr:`map_id_to_name`
+        2. 上で引けなければ ``ap_name`` → :attr:`ap_name_to_floor`
+           （座標列を追加する前の 33 列版 ap_metrics は map_id を持たないため）
+        3. どちらでも引けなければ :data:`UNASSIGNED`
+        """
         key = _text(map_id)
-        if not key:
-            return UNASSIGNED
-        return self.map_id_to_name.get(key, UNASSIGNED)
+        if key:
+            hit = self.map_id_to_name.get(key)
+            if hit is not None:
+                return hit
+        name = _text(ap_name)
+        if name:
+            hit = self.ap_name_to_floor.get(name)
+            if hit is not None:
+                return hit
+        return UNASSIGNED
 
 
 def _text(value: object) -> str:
@@ -230,42 +262,67 @@ def resolve_floors(
                 ap_to_floor.setdefault(name, map_name)
 
     resolution.map_id_to_name = _map_id_to_name(metrics_at_peak, ap_to_floor, resolution.warnings)
+    resolution.ap_name_to_floor = ap_to_floor
 
-    resolution.warnings.extend(_unassigned_warnings(metrics_at_peak, resolution))
+    notes, fallback_warnings = _fallback_messages(metrics_at_peak, resolution)
+    resolution.notes.extend(notes)
+    resolution.warnings.extend(fallback_warnings)
     return resolution
 
 
-def _unassigned_warnings(
+def _fallback_messages(
     metrics_at_peak: pd.DataFrame, resolution: FloorResolution
-) -> list[str]:
-    """フロアが決まらなかった AP の警告。
+) -> tuple[list[str], list[str]]:
+    """フロア解決の結果に応じたメッセージ（注記 / 警告）を組み立てる。
 
-    **「map_id が空」と「map_id はあるが紐付かない」を分けて出す。** 前者は
-    座標列を足す前の 33 列版 ``ap_metrics``（``ap_metrics_v1``）を読んだときに必ず
-    起きる。原因が分からないと「フロア解決が壊れている」と読まれてしまう。
+    - ``map_id`` が空で ``ap_name`` 経由のフォールバックで解決できた AP →
+      **これは異常ではなく正常動作**（33 列版 ap_metrics の期間で必ず起きる）
+      なので、警告ではなく :attr:`FloorResolution.notes`（分析条件の補足）に出す
+    - ``map_id`` が空のまま解決できなかった AP → 従来どおり警告。ただし原因は
+      「33 列版だから」ではなく「``floormap_summary`` の ``ap_list`` にその
+      AP 名が無いから」なので、その事実を書く（33 列版でも ap_list に載って
+      いれば ap_name 経由で解決できる）
+    - ``map_id`` はあるがどのフロアにも紐付かない AP → 現行のまま変更しない
     """
+    notes: list[str] = []
     warnings: list[str] = []
-    blank = 0
+    blank_resolved = 0
+    blank_unresolved = 0
     unmapped = 0
-    for map_id in metrics_at_peak.get("map_id", []):
-        if resolution.floor_of(map_id) != UNASSIGNED:
-            continue
-        if _text(map_id):
+    for map_id, ap_name in zip(
+        metrics_at_peak.get("map_id", []), metrics_at_peak.get("ap_name", [])
+    ):
+        mid = _text(map_id)
+        if mid and mid in resolution.map_id_to_name:
+            continue  # map_id で解決
+        name = _text(ap_name)
+        if name and name in resolution.ap_name_to_floor:
+            if not mid:
+                blank_resolved += 1
+            continue  # ap_name のフォールバックで解決
+        if mid:
             unmapped += 1
         else:
-            blank += 1
-    if blank:
+            blank_unresolved += 1
+
+    if blank_resolved:
+        notes.append(
+            f"map_id を持たない AP が {blank_resolved} 台ありましたが、"
+            "floormap_summary の AP 名からフロアを特定しました"
+            "（座標列を追加する前の 33 列版 ap_metrics の期間）"
+        )
+    if blank_unresolved:
         warnings.append(
-            f"map_id を持たない AP が {blank} 台あります。ピーク時点のログが "
-            "座標列を追加する前の 33 列版 ap_metrics だと map_id が無いため、"
-            f"フロアを特定できません。「{UNASSIGNED}」として結果に残しています"
+            f"map_id を持たない AP が {blank_unresolved} 台あります。"
+            "floormap_summary の AP 一覧（ap_list）に該当する AP 名が無いため、"
+            f"フロアを特定できませんでした。「{UNASSIGNED}」として結果に残しています"
         )
     if unmapped:
         warnings.append(
             f"map_id はあるがどのフロアにも紐付かない AP が {unmapped} 台あります"
             f"（floormap に載っていない AP）。「{UNASSIGNED}」として結果に残しています"
         )
-    return warnings
+    return notes, warnings
 
 
 def _map_id_to_name(

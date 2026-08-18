@@ -240,7 +240,7 @@ def test_download_xlsx_for_a_chosen_floor(api_client, tmp_path):
     wb = load_workbook(path)
     assert S.FLOOR_2F in str(wb["chart"].cell(row=4, column=1).value)
     # data シートには全フロアが入る（グラフだけがフロアごと）
-    assert wb["data"].max_row == 5 + 3
+    assert wb["data"].max_row == 4 + 3
 
 
 def test_download_xlsx_for_unknown_floor_is_400(api_client):
