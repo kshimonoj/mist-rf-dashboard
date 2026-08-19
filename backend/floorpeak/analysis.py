@@ -603,21 +603,30 @@ def _write_chart_sheet(ws, rows: pd.DataFrame, meta: dict[str, Any], target: str
     chart.type = "bar"  # 横棒
     chart.style = 10
     chart.title = f"{label} / ピーク時点 {meta.get('peak_time')} の接続端末数トップ {TOP_N}"
-    chart.y_axis.title = "AP"
-    chart.x_axis.title = "接続端末数"
     # 単一系列なので Excel 標準の凡例にはモデル名が出ない。凡例はセル側で自作する
     chart.legend = None
     chart.dataLabels = DataLabelList()
+    chart.dataLabels.showSerName = False
+    chart.dataLabels.showCatName = False
     chart.dataLabels.showVal = True
+    chart.dataLabels.showLegendKey = False
 
     values = Reference(ws, min_col=2, min_row=data_start, max_row=data_start + len(top))
     cats = Reference(ws, min_col=1, min_row=data_start + 1, max_row=data_start + len(top))
     chart.add_data(values, titles_from_data=True)
     chart.set_categories(cats)
 
-    # 1 位を上に出す（既定は下から積むため）。値軸のラベルは下に固定する
-    chart.y_axis.scaling.orientation = "maxMin"
+    # openpyxl は delete を明示しないと Excel 側で軸が描画されない
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+    # 横棒（type="bar"）ではカテゴリ軸が x_axis、値軸が y_axis
+    # 1 位を上に出す（既定は下から積むため）。値軸は左から右に増える向きに戻す
+    chart.x_axis.scaling.orientation = "maxMin"
+    chart.y_axis.scaling.orientation = "minMax"
     chart.x_axis.tickLblPos = "low"
+    # 軸タイトルは冗長かつ横棒では表示位置が直感と合わないため付けない
+    chart.x_axis.title = None
+    chart.y_axis.title = None
 
     series = chart.series[0]
     for i, model in enumerate(top["model"]):
@@ -626,8 +635,9 @@ def _write_chart_sheet(ws, rows: pd.DataFrame, meta: dict[str, Any], target: str
         point.graphicalProperties.line.solidFill = model_color(model)
         series.data_points.append(point)
 
-    chart.height = max(8, 0.9 * len(top))
-    chart.width = 24
+    chart.gapWidth = 40
+    chart.height = 4 + 0.55 * len(top)
+    chart.width = 17.5
     ws.add_chart(chart, "D2")
 
 
