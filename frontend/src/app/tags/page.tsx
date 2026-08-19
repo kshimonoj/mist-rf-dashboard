@@ -9,6 +9,7 @@ import clsx from "clsx";
 import {
   fetchAllTags, fetchTagAps, fetchTagClients, ApInfo, ClientInfo,
 } from "@/lib/api";
+import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import { TagBadge } from "@/app/components/TagCell";
 
@@ -165,6 +166,7 @@ export default function TagsPage() {
             <RefreshCw className={`w-4 h-4 ${tagsLoading ? "animate-spin" : ""}`} />
             Refresh
           </button>
+          <MaskToggle />
           <ThemeToggle />
         </div>
       </header>

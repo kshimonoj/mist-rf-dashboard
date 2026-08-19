@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { fetchSites, SiteInfo } from "@/lib/api";
+import MaskToggle from "./components/MaskToggle";
 import ThemeToggle from "./components/ThemeToggle";
 import SaveNowButton from "./components/SaveNowButton";
 import PollNowButton from "./components/PollNowButton";
@@ -160,6 +161,7 @@ export default function HomePage() {
               </>
             )}
           </Dropdown>
+          <MaskToggle />
           <ThemeToggle />
         </div>
       </header>

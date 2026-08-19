@@ -15,6 +15,7 @@ import {
 } from "@/lib/api";
 import FloorPeakChart from "@/app/components/FloorPeakChart";
 import TabNav from "@/app/components/TabNav";
+import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
@@ -732,6 +733,7 @@ export default function FloorPeakPage() {
             <RefreshCw className={`w-4 h-4 ${jobLoading ? "animate-spin" : ""}`} />
             状態を再取得
           </button>
+          <MaskToggle />
           <ThemeToggle />
         </div>
       </header>

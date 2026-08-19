@@ -6,6 +6,7 @@ import useSWR from "swr";
 import { useState, useMemo } from "react";
 import { fetchSiteAps, fetchSite, fetchApTags, putApTag, ApInfo, SiteSummary, ApTagEntry } from "@/lib/api";
 import clsx from "clsx";
+import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import SleSection from "@/app/components/SleSection";
 import ClientsTab from "@/app/components/ClientsTab";
@@ -177,6 +178,7 @@ export default function SitePage({ params }: { params: { siteId: string } }) {
             <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
             Refresh
           </button>
+          <MaskToggle />
           <ThemeToggle />
         </div>
       </header>

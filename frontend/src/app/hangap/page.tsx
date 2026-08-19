@@ -14,6 +14,7 @@ import {
   HangapSavedResult, HangapSummary,
 } from "@/lib/api";
 import HangapResultTable from "@/app/components/HangapResultTable";
+import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import TabNav from "@/app/components/TabNav";
 import { toLocalString } from "@/lib/time";
@@ -820,6 +821,7 @@ export default function HangApPage() {
             <RefreshCw className={`w-4 h-4 ${jobLoading ? "animate-spin" : ""}`} />
             状態を再取得
           </button>
+          <MaskToggle />
           <ThemeToggle />
         </div>
       </header>

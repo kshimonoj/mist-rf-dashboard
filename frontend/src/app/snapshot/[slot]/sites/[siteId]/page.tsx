@@ -5,6 +5,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import { fetchSnapshotSiteAps, ApInfo } from "@/lib/api";
 import clsx from "clsx";
+import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 
 function formatUptime(seconds: number | null): string {
@@ -72,7 +73,8 @@ export default function SnapshotSiteApPage({
             <p className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{siteId}</p>
           </div>
         </div>
-        <ThemeToggle />
+          <MaskToggle />
+          <ThemeToggle />
       </header>
 
       {/* スナップショットバナー */}

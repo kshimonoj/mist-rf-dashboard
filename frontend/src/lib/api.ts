@@ -1,9 +1,25 @@
+import { maskMessage, maskResponse } from "./mask";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8008";
+
+/**
+ * **すべての API 応答はここを通す。**（デモ用の画面匿名化）
+ * 応答の JSON をフィールド名のルールで再帰的に置き換える。トグルが OFF のときは
+ * 変換関数を通さず、受け取ったものをそのまま返す。詳細は `lib/mask.ts`。
+ */
+async function maskedJson<T>(res: Response): Promise<T> {
+  return maskResponse((await res.json()) as T);
+}
+
+/** エラー本文（detail）も画面に出るのでマスク対象にする */
+function maskedDetail(detail: string | undefined): string | undefined {
+  return detail === undefined ? undefined : maskMessage(detail);
+}
 
 async function apiFetch<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
-  return res.json();
+  return maskedJson<T>(res);
 }
 
 export interface SiteInfo {
@@ -251,7 +267,7 @@ export async function deleteLogs(filenames: string[]): Promise<{ deleted: number
     body: JSON.stringify({ filenames }),
   });
   if (!res.ok) throw new Error(`Delete error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 export interface SnapshotInfo {
@@ -272,7 +288,7 @@ export async function pollNow(): Promise<void> {
 export async function createSnapshot(): Promise<SnapshotInfo> {
   const res = await fetch(`${API_BASE}/api/snapshots`, { method: "POST" });
   if (!res.ok) throw new Error(`Snapshot error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 export const fetchSnapshots = () => apiFetch<SnapshotInfo[]>("/api/snapshots");
@@ -328,10 +344,10 @@ export async function createSnapshotDb(slot?: number): Promise<SnapshotDbMeta> {
   const res = await fetch(`${API_BASE}/api/snapshot-db${qs}`, { method: "POST" });
   if (!res.ok) {
     let detail: string | undefined;
-    try { detail = (await res.json()).detail; } catch { /* ignore */ }
+    try { detail = maskedDetail((await res.json()).detail); } catch { /* ignore */ }
     throw new Error(detail ?? `Snapshot error ${res.status}`);
   }
-  return res.json();
+  return maskedJson(res);
 }
 
 export const fetchSnapshotSites = (slot: number) =>
@@ -365,10 +381,10 @@ export async function uploadSnapshotDb(file: File, slot?: number): Promise<Snaps
   const res = await fetch(`${API_BASE}/api/snapshot-db/upload${qs}`, { method: "POST", body: fd });
   if (!res.ok) {
     let detail: string | undefined;
-    try { detail = (await res.json()).detail; } catch { /* ignore */ }
+    try { detail = maskedDetail((await res.json()).detail); } catch { /* ignore */ }
     throw new Error(detail ?? `Upload error ${res.status}`);
   }
-  return res.json();
+  return maskedJson(res);
 }
 
 // ── Floor Map ─────────────────────────────────────────────────────────────────
@@ -440,7 +456,7 @@ export async function saveFloorMapLog(
     body: JSON.stringify(rows),
   });
   if (!res.ok) throw new Error(`FloorMap save error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 export const fetchFloorMaps = (siteId: string) =>
   apiFetch<FloorMapInfo[]>(`/api/floor-map/sites/${siteId}/maps`);
@@ -459,10 +475,10 @@ export async function updateSettings(
   });
   if (!res.ok) {
     let detail: string | undefined;
-    try { detail = (await res.json()).detail; } catch { /* ignore */ }
+    try { detail = maskedDetail((await res.json()).detail); } catch { /* ignore */ }
     throw new Error(detail ?? `Settings error ${res.status}`);
   }
-  return res.json();
+  return maskedJson(res);
 }
 
 // ── Tags ───────────────────────────────────────────────────────────────────────
@@ -496,7 +512,7 @@ export async function putApTag(apId: string, tags: string): Promise<{ tags: stri
     body: JSON.stringify({ tags }),
   });
   if (!res.ok) throw new Error(`Tag save error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 export async function putClientTag(mac: string, tags: string): Promise<{ tags: string[] }> {
@@ -506,7 +522,7 @@ export async function putClientTag(mac: string, tags: string): Promise<{ tags: s
     body: JSON.stringify({ tags }),
   });
   if (!res.ok) throw new Error(`Tag save error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 // ── Insights ──────────────────────────────────────────────────────────────────
@@ -559,7 +575,7 @@ export const fetchInsights = (view?: "history") =>
 export async function analyzeInsights(): Promise<InsightsResponse> {
   const res = await fetch(`${API_BASE}/api/insights/analyze`, { method: "POST" });
   if (!res.ok) throw new Error(`Insights analyze error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 export type ImpactJudgment = "improved" | "degraded" | "neutral" | "no_data";
@@ -653,7 +669,7 @@ export interface ApEventsBackfillResult {
 export async function backfillApEvents(days = 7): Promise<ApEventsBackfillResult> {
   const res = await fetch(`${API_BASE}/api/ap-events/backfill?days=${days}`, { method: "POST" });
   if (!res.ok) throw new Error(`Backfill error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 // ── Credentials (Environments) ────────────────────────────────────────────────
@@ -690,10 +706,10 @@ async function credentialsRequest<T>(
   });
   if (!res.ok) {
     let detail: string | undefined;
-    try { detail = (await res.json()).detail; } catch { /* ignore */ }
+    try { detail = maskedDetail((await res.json()).detail); } catch { /* ignore */ }
     throw new Error(detail ?? `Credentials error ${res.status}`);
   }
-  return res.json();
+  return maskedJson(res);
 }
 
 export interface CredentialInput {
@@ -899,7 +915,7 @@ export interface HangapLogSites {
 export async function fetchHangapLogSites(refresh = false): Promise<HangapLogSites> {
   const res = await fetch(`${API_BASE}/api/hangap/sites${refresh ? "?refresh=true" : ""}`);
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP sites error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 /** 分析条件。未指定（undefined）の項目は送らず、バックエンドの既定値に任せる。 */
@@ -928,8 +944,8 @@ export interface HangapStartResult {
 async function hangapDetail(res: Response): Promise<string | undefined> {
   try {
     const detail = (await res.json()).detail;
-    if (typeof detail === "string") return detail;
-    if (detail && typeof detail === "object") return detail.message;
+    if (typeof detail === "string") return maskMessage(detail);
+    if (detail && typeof detail === "object") return maskedDetail(detail.message);
   } catch {
     /* ignore */
   }
@@ -948,7 +964,7 @@ export async function startHangapAnalysis(body: HangapAnalyzeBody): Promise<Hang
     return {
       job_id: detail.job_id ?? "",
       conflict: true,
-      message: detail.message ?? "別の分析が実行中です。",
+      message: maskMessage(detail.message ?? "別の分析が実行中です。"),
     };
   }
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP analyze error ${res.status}`);
@@ -960,7 +976,7 @@ export async function fetchHangapJob(jobId: string): Promise<HangapJob | null> {
   const res = await fetch(`${API_BASE}/api/hangap/jobs/${jobId}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP job error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 /** 結果テーブルの取得条件（実行中ジョブ / 保存済み結果で共通） */
@@ -992,7 +1008,7 @@ export async function fetchHangapResult(
     `${API_BASE}/api/hangap/jobs/${jobId}/result?${hangapRowsQuery(opts)}`
   );
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP result error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 /** ダウンロードは常に全列（API の出力をそのまま渡す） */
@@ -1029,7 +1045,7 @@ export interface HangapSavedResult {
 export async function fetchHangapSavedResults(): Promise<HangapSavedResult[]> {
   const res = await fetch(`${API_BASE}/api/hangap/results`);
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP results error ${res.status}`);
-  return (await res.json()).results;
+  return maskResponse((await res.json()).results);
 }
 
 /**
@@ -1045,7 +1061,7 @@ export async function fetchHangapSavedRows(
     `${API_BASE}/api/hangap/results/${encodeURIComponent(name)}/rows?${hangapRowsQuery(opts)}`
   );
   if (!res.ok) throw new Error((await hangapDetail(res)) ?? `Hang AP saved rows error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 export const getHangapSavedDownloadUrl = (name: string, format: "xlsx" | "csv") =>
@@ -1107,7 +1123,7 @@ export async function downloadPseudonymized(url: string, fallbackName: string): 
     let message = `仮名化ダウンロードに失敗しました（${res.status}）`;
     try {
       const body = await res.json();
-      if (typeof body?.detail === "string") message = body.detail;
+      if (typeof body?.detail === "string") message = maskMessage(body.detail);
     } catch {
       /* JSON でなければ既定のメッセージ */
     }
@@ -1214,7 +1230,7 @@ function decodeRestoreReport(res: Response): RestoreReport | null {
   if (!raw) return null;
   try {
     const bytes = Uint8Array.from(atob(raw), (ch) => ch.charCodeAt(0));
-    return JSON.parse(new TextDecoder().decode(bytes)) as RestoreReport;
+    return maskResponse(JSON.parse(new TextDecoder().decode(bytes)) as RestoreReport);
   } catch {
     return null;
   }
@@ -1238,7 +1254,7 @@ export async function restorePseudonymized(
     let message = `復元に失敗しました（${res.status}）`;
     try {
       const body = await res.json();
-      if (typeof body?.detail === "string") message = body.detail;
+      if (typeof body?.detail === "string") message = maskMessage(body.detail);
     } catch {
       /* JSON でなければ既定のメッセージ */
     }
@@ -1383,8 +1399,8 @@ export interface FloorPeakStartResult {
 async function floorPeakDetail(res: Response): Promise<string | undefined> {
   try {
     const detail = (await res.json()).detail;
-    if (typeof detail === "string") return detail;
-    if (detail && typeof detail === "object") return detail.message;
+    if (typeof detail === "string") return maskMessage(detail);
+    if (detail && typeof detail === "object") return maskedDetail(detail.message);
   } catch {
     /* ignore */
   }
@@ -1395,7 +1411,7 @@ async function floorPeakDetail(res: Response): Promise<string | undefined> {
 export async function fetchFloorPeakLogSites(refresh = false): Promise<HangapLogSites> {
   const res = await fetch(`${API_BASE}/api/floorpeak/sites${refresh ? "?refresh=true" : ""}`);
   if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak sites error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 export async function startFloorPeakAnalysis(
@@ -1412,7 +1428,7 @@ export async function startFloorPeakAnalysis(
     return {
       job_id: detail.job_id ?? "",
       conflict: true,
-      message: detail.message ?? "別の分析が実行中です。",
+      message: maskMessage(detail.message ?? "別の分析が実行中です。"),
     };
   }
   if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak analyze error ${res.status}`);
@@ -1424,27 +1440,27 @@ export async function fetchFloorPeakJob(jobId: string): Promise<FloorPeakJob | n
   const res = await fetch(`${API_BASE}/api/floorpeak/jobs/${jobId}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak job error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 export async function fetchFloorPeakResult(jobId: string): Promise<FloorPeakResult> {
   const res = await fetch(`${API_BASE}/api/floorpeak/jobs/${jobId}/result`);
   if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak result error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 /** 保存済み結果の行。`fetchFloorPeakResult` と同じ形が返る（表示は同じ実装を使う）。 */
 export async function fetchFloorPeakSavedRows(name: string): Promise<FloorPeakResult> {
   const res = await fetch(`${API_BASE}/api/floorpeak/results/${encodeURIComponent(name)}/rows`);
   if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak saved rows error ${res.status}`);
-  return res.json();
+  return maskedJson(res);
 }
 
 /** 新しい順。 */
 export async function fetchFloorPeakSavedResults(): Promise<FloorPeakSavedResult[]> {
   const res = await fetch(`${API_BASE}/api/floorpeak/results`);
   if (!res.ok) throw new Error((await floorPeakDetail(res)) ?? `Floor peak results error ${res.status}`);
-  return (await res.json()).results;
+  return maskResponse((await res.json()).results);
 }
 
 export async function deleteFloorPeakSavedResult(name: string): Promise<void> {

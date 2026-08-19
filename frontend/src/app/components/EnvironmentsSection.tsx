@@ -11,6 +11,7 @@ import {
   updateCredential,
   type CredentialItem,
 } from "@/lib/api";
+import { useMask } from "@/app/providers";
 
 const MIST_REGIONS = [
   { label: "Global 01", url: "https://api.mist.com/api/v1" },
@@ -56,6 +57,7 @@ const EMPTY_FORM: FormState = {
 };
 
 export default function EnvironmentsSection() {
+  const { masked } = useMask();
   const { data, mutate } = useSWR("credentials", fetchCredentials);
   const items = data?.items ?? [];
   const active = items.find((c) => c.is_active);
@@ -79,6 +81,9 @@ export default function EnvironmentsSection() {
   const openNew = () => setForm({ ...EMPTY_FORM });
 
   const openEdit = (c: CredentialItem) => {
+    // マスク表示中は環境名が仮名になっている。そのまま保存すると実際の名前を
+    // 仮名で上書きしてしまうので編集させない。
+    if (masked) return;
     const region = urlToRegion(c.mist_base_url);
     setForm({
       id: c.id,
@@ -253,9 +258,10 @@ export default function EnvironmentsSection() {
                     </button>
                     <button
                       onClick={() => openEdit(c)}
-                      className="p-1 rounded border mr-1.5 transition-all align-middle"
+                      disabled={masked}
+                      className="p-1 rounded border mr-1.5 transition-all align-middle disabled:opacity-30 disabled:cursor-not-allowed"
                       style={{ borderColor: "var(--chart-grid)", color: "var(--text-secondary)" }}
-                      title="編集"
+                      title={masked ? "マスク表示中は編集できません" : "編集"}
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </button>

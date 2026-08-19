@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useMask } from "@/app/providers";
 
 const TAG_COLORS = ["#00d4ff", "#7c3aed", "#00ff80", "#facc15", "#ff8c00", "#3b82f6", "#f472b6"];
 
@@ -29,6 +30,9 @@ export default function TagCell({
   tags: string[];
   onSave: (tagsStr: string) => Promise<void>;
 }) {
+  // マスク表示中は編集させない。画面に出ているのは仮名なので、そのまま保存すると
+  // 実際のタグを仮名で上書きしてしまう。
+  const { masked } = useMask();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(tags.join(", "));
   const [saving, setSaving] = useState(false);
@@ -44,6 +48,7 @@ export default function TagCell({
 
   const startEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (masked) return;
     setValue(tags.join(", "));
     setEditing(true);
   };
@@ -86,8 +91,8 @@ export default function TagCell({
   return (
     <div
       onClick={startEdit}
-      className="flex flex-wrap items-center gap-1 cursor-pointer min-w-[60px]"
-      title="クリックで編集"
+      className={`flex flex-wrap items-center gap-1 min-w-[60px] ${masked ? "cursor-not-allowed" : "cursor-pointer"}`}
+      title={masked ? "マスク表示中は編集できません" : "クリックで編集"}
     >
       {tags.length > 0 ? (
         tags.map((t) => <TagBadge key={t} tag={t} />)

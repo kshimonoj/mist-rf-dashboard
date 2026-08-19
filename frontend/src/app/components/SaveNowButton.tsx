@@ -3,6 +3,7 @@
 import { Save } from "lucide-react";
 import { useState } from "react";
 import { createSnapshot, saveFloorMapLog, FloorMapSaveRow } from "@/lib/api";
+import { useMask } from "@/app/providers";
 
 interface SaveNowButtonProps {
   getFloorMapRows?: () => FloorMapSaveRow[] | null;
@@ -11,6 +12,8 @@ interface SaveNowButtonProps {
 }
 
 export default function SaveNowButton({ getFloorMapRows, asMenuItem }: SaveNowButtonProps = {}) {
+  // マスク表示中の Floor Map 行は仮名なので、そのまま保存するとログに仮名が混ざる
+  const { masked } = useMask();
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
@@ -21,7 +24,7 @@ export default function SaveNowButton({ getFloorMapRows, asMenuItem }: SaveNowBu
       const snap = await createSnapshot();
 
       // Floor Map データが取得できる場合は一緒に保存
-      if (getFloorMapRows) {
+      if (getFloorMapRows && !masked) {
         const rows = getFloorMapRows();
         if (rows && rows.length > 0) {
           try {
@@ -32,7 +35,12 @@ export default function SaveNowButton({ getFloorMapRows, asMenuItem }: SaveNowBu
         }
       }
 
-      setToast({ msg: `保存完了: ${snap.ap_count} APs`, ok: true });
+      setToast({
+        msg: masked
+          ? `保存完了: ${snap.ap_count} APs（マスク表示中のため Floor Map ログは保存しません）`
+          : `保存完了: ${snap.ap_count} APs`,
+        ok: true,
+      });
     } catch {
       setToast({ msg: "保存に失敗しました", ok: false });
     } finally {

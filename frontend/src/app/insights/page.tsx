@@ -9,6 +9,7 @@ import {
   ConfigImpact, InsightCategory, InsightIssue, InsightsResponse, InsightSeverity,
   RecentConfigChange,
 } from "@/lib/api";
+import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import TabNav from "@/app/components/TabNav";
 import { VerdictBadge } from "@/app/components/ConfigImpactPanel";
@@ -358,6 +359,7 @@ export default function InsightsPage() {
             <RefreshCw className={`w-4 h-4 ${analyzing ? "animate-spin" : ""}`} />
             {analyzing ? "Analyzing..." : "Analyze Now"}
           </button>
+          <MaskToggle />
           <ThemeToggle />
         </div>
       </header>

@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { fetchSnapshotSites, fetchSnapshotDbs, SnapshotSite, SnapshotDbMeta } from "@/lib/api";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
+import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import FloorMapTab from "@/app/components/FloorMapTab";
 
@@ -50,7 +51,8 @@ export default function SnapshotSitePage({ params }: { params: { slot: string } 
             </p>
           </div>
         </div>
-        <ThemeToggle />
+          <MaskToggle />
+          <ThemeToggle />
       </header>
 
       {/* スナップショットバナー */}

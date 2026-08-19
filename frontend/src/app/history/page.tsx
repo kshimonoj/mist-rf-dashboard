@@ -12,6 +12,7 @@ import {
   PSEUDONYMIZE_MAX_FILES, PSEUDONYMIZE_NOTICE,
   SnapshotInfo, LogFileInfo, SiteInfo, ApInfo, SnapshotDbMeta, ClientListItem,
 } from "@/lib/api";
+import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import SaveNowButton from "@/app/components/SaveNowButton";
 import TabNav from "@/app/components/TabNav";
@@ -752,6 +753,7 @@ export default function HistoryPage() {
             <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
             Refresh
           </button>
+          <MaskToggle />
           <ThemeToggle />
         </div>
       </header>
