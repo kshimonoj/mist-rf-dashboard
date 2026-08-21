@@ -10,6 +10,7 @@ import {
   hangapFilterSpecs, isHangapFilterActive,
   HangapCell, HangapColumnKind, HangapFilter, HangapFilters, HangapResultPage,
 } from "@/lib/api";
+import DownloadLink from "@/app/components/DownloadLink";
 
 /**
  * 結果テーブル。**分析直後の結果と保存済み結果で同じこのコンポーネントを使う。**
@@ -365,7 +366,7 @@ export default function HangapResultTable({ source }: { source: HangapResultSour
       {/* ダウンロード（画面の絞り込み・列順とは無関係に、常に全行・全列） */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         {(["xlsx", "csv"] as const).map((format) => (
-          <a
+          <DownloadLink
             key={format}
             href={downloads[format]}
             className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm"
@@ -373,7 +374,7 @@ export default function HangapResultTable({ source }: { source: HangapResultSour
           >
             <Download className="w-4 h-4" />
             {format} ダウンロード
-          </a>
+          </DownloadLink>
         ))}
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>
           ダウンロードは常に全 {page?.columns.length ?? 30} 列・全行（画面のフィルタ・列順の影響を受けません）

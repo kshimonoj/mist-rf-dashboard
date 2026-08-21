@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import { toLocalString } from "@/lib/time";
 import { useTimezone } from "@/app/providers";
+import DownloadLink from "@/app/components/DownloadLink";
 
 function formatSize(bytes: number | null) {
   if (!bytes) return "-";
@@ -72,13 +73,13 @@ function SlotCard({
           </button>
         )}
         {hasData && (
-          <a href={getSnapshotDbDownloadUrl(meta.slot, timezone)}
+          <DownloadLink href={getSnapshotDbDownloadUrl(meta.slot, timezone)}
             download
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-mono transition-all"
             style={{ borderColor: "var(--border-cyan)", color: "var(--text-secondary)" }}>
             <Download className="w-3.5 h-3.5" />
             DL
-          </a>
+          </DownloadLink>
         )}
         <button onClick={onSave} disabled={saving}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-mono transition-all disabled:opacity-40"

@@ -22,6 +22,8 @@ import {
   RESTORE_RESIDUAL_LABELS,
   RestoreReport,
 } from "@/lib/api";
+import { useMask } from "@/app/providers";
+import { DOWNLOAD_DISABLED_TITLE } from "@/lib/mask";
 
 const DEFAULT_EXTENSIONS = [".csv", ".tsv", ".json", ".txt", ".md", ".log", ".xlsx"];
 
@@ -32,6 +34,7 @@ function formatSize(bytes: number) {
 }
 
 export default function RestorePanel() {
+  const { masked } = useMask();
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [noTime, setNoTime] = useState(false);
@@ -49,7 +52,7 @@ export default function RestorePanel() {
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
   const tooBig = totalBytes > maxBytes;
   const tooMany = files.length > maxFiles;
-  const canSubmit = files.length > 0 && !tooBig && !tooMany && !busy;
+  const canSubmit = files.length > 0 && !tooBig && !tooMany && !busy && !masked;
 
   const pickFiles = (list: FileList | null) => {
     setFiles(list ? Array.from(list) : []);
@@ -167,6 +170,7 @@ export default function RestorePanel() {
             <button
               onClick={handleRestore}
               disabled={!canSubmit}
+              title={masked ? DOWNLOAD_DISABLED_TITLE : undefined}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded border text-sm font-mono transition-all disabled:opacity-40"
               style={{
                 borderColor: "var(--yellow)",
@@ -178,6 +182,12 @@ export default function RestorePanel() {
               {busy ? "復元中..." : "復元してダウンロード"}
             </button>
           </div>
+
+          {masked && (
+            <p className="text-xs" style={{ color: "var(--yellow)" }}>
+              {DOWNLOAD_DISABLED_TITLE}（復元後のファイルは実名を含むため）
+            </p>
+          )}
 
           <p className="text-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
             {RESTORE_LIMITS_NOTICE}

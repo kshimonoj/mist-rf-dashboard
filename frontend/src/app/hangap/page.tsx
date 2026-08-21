@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import useSWR from "swr";
 import {
   deleteHangapSavedResult, fetchHangapJob, fetchHangapLogSites, fetchHangapSavedResults,
-  getHangapSavedDownloadUrl, startHangapAnalysis,
+  getHangapSavedDownloadUrl, startHangapAnalysis, fetchSiteAps,
   downloadPseudonymized, getPseudonymizedResultUrl, PSEUDONYMIZE_NOTICE,
   HangapAnalyzeBody, HangapJob, HangapLogSite, HangapLogSites, HangapPhase,
   HangapSavedResult, HangapSummary,
@@ -17,8 +17,10 @@ import HangapResultTable from "@/app/components/HangapResultTable";
 import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import TabNav from "@/app/components/TabNav";
+import DownloadLink from "@/app/components/DownloadLink";
 import { toLocalString } from "@/lib/time";
-import { useTimezone } from "@/app/providers";
+import { useTimezone, useMask } from "@/app/providers";
+import { DOWNLOAD_DISABLED_TITLE, prefetchForMask } from "@/lib/mask";
 
 const PHASE_LABELS: Record<HangapPhase, string> = {
   loading: "読み込み中",
@@ -436,6 +438,7 @@ function SavedResults({
   onView: (row: HangapSavedResult | null) => void;
 }) {
   const { timezone } = useTimezone();
+  const { masked } = useMask();
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pseudonymizing, setPseudonymizing] = useState<string | null>(null);
@@ -589,21 +592,22 @@ function SavedResults({
                         {viewingName === row.name ? "表示中" : "表示"}
                       </button>
                       {(["xlsx", "csv"] as const).map((format) => (
-                        <a
+                        <DownloadLink
                           key={format}
                           href={getHangapSavedDownloadUrl(row.name, format)}
-                          className={`flex items-center gap-1 px-2 py-1 border rounded text-xs ${row.files[format] === undefined ? "pointer-events-none opacity-40" : ""}`}
+                          className="flex items-center gap-1 px-2 py-1 border rounded text-xs"
                           style={linkStyle}
+                          disabled={row.files[format] === undefined}
                         >
                           <Download className="w-3.5 h-3.5" />
                           {format}
-                        </a>
+                        </DownloadLink>
                       ))}
                       {/* 通常のダウンロードとは別の導線。csv だけに出す */}
                       <button
                         onClick={() => handlePseudonymize(row)}
-                        disabled={pseudonymizing === row.name || row.files.csv === undefined}
-                        title={PSEUDONYMIZE_NOTICE}
+                        disabled={masked || pseudonymizing === row.name || row.files.csv === undefined}
+                        title={masked ? DOWNLOAD_DISABLED_TITLE : PSEUDONYMIZE_NOTICE}
                         className="flex items-center gap-1 px-2 py-1 border rounded text-xs disabled:opacity-40"
                         style={{ borderColor: "var(--green)", color: "var(--green)" }}
                       >
@@ -633,6 +637,7 @@ function SavedResults({
 
 export default function HangApPage() {
   const { timezone } = useTimezone();
+  const { masked } = useMask();
 
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -660,6 +665,18 @@ export default function HangApPage() {
     if (siteSelection !== null || !logSites) return;
     if (logSites.sites.length === 1) setSiteSelection([logSites.sites[0].site_id]);
   }, [logSites, siteSelection]);
+
+  // マスク ON 中のみ: 選択されたサイトの AP 一覧を先行取得し、警告文（自由文）に
+  // 出てくる AP 名をあらかじめ採番しておく。取りこぼし（一覧に無い AP 名）は残る。
+  useEffect(() => {
+    if (!masked) return;
+    const siteIds = siteSelection === "all"
+      ? (logSites?.sites ?? []).map((s) => s.site_id)
+      : siteSelection ?? [];
+    for (const siteId of siteIds) {
+      prefetchForMask(() => fetchSiteAps(siteId));
+    }
+  }, [masked, siteSelection, logSites]);
 
   // 画面を離れてもジョブはサーバ側で走り続ける。戻ってきたら拾い直す
   useEffect(() => {

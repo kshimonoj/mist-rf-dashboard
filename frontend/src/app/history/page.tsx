@@ -17,8 +17,10 @@ import ThemeToggle from "@/app/components/ThemeToggle";
 import SaveNowButton from "@/app/components/SaveNowButton";
 import TabNav from "@/app/components/TabNav";
 import RestorePanel from "@/app/components/RestorePanel";
+import DownloadLink from "@/app/components/DownloadLink";
 import { toLocalString } from "@/lib/time";
-import { useTimezone } from "@/app/providers";
+import { useTimezone, useMask } from "@/app/providers";
+import { DOWNLOAD_DISABLED_TITLE } from "@/lib/mask";
 
 type TriggerFilter = "all" | "manual" | "auto" | "manual-backfill";
 type TypeFilter = "all" | "ap_metrics" | "floormap" | "sle_metrics" | "client_metrics" | "ap_events";
@@ -247,7 +249,7 @@ function SnapshotsTab() {
                       <Eye className="w-3.5 h-3.5" />
                       閲覧
                     </Link>
-                    <a
+                    <DownloadLink
                       href={getSnapshotDbDownloadUrl(meta.slot, timezone)}
                       download
                       className="flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-mono transition-all"
@@ -255,7 +257,7 @@ function SnapshotsTab() {
                     >
                       <Download className="w-3.5 h-3.5" />
                       DL
-                    </a>
+                    </DownloadLink>
                   </div>
                 )}
               </div>
@@ -269,6 +271,7 @@ function SnapshotsTab() {
 
 function CsvLogsTab() {
   const { timezone } = useTimezone();
+  const { masked } = useMask();
   const [selectedSiteId, setSelectedSiteId] = useState<string>("");
   const [selectedApId, setSelectedApId] = useState<string>("");
   const [selectedApMac, setSelectedApMac] = useState<string>("");
@@ -551,7 +554,7 @@ function CsvLogsTab() {
             <span className="text-sm font-mono" style={{ color: "var(--text-secondary)" }}>
               {selected.size} 件選択中
             </span>
-            <a
+            <DownloadLink
               href={getLogsZipUrl(Array.from(selected))}
               download
               className="flex items-center gap-1.5 px-3 py-1.5 rounded border text-sm font-mono transition-all"
@@ -559,13 +562,15 @@ function CsvLogsTab() {
             >
               <FileDown className="w-4 h-4" />
               ZIP ダウンロード
-            </a>
+            </DownloadLink>
             {/* 通常のダウンロードとは別の導線にする（取り違えると実データが出る） */}
             <button
               onClick={handlePseudonymize}
-              disabled={pseudoBusy || tooManyForPseudonymize}
+              disabled={masked || pseudoBusy || tooManyForPseudonymize}
               title={
-                tooManyForPseudonymize
+                masked
+                  ? DOWNLOAD_DISABLED_TITLE
+                  : tooManyForPseudonymize
                   ? `一度に仮名化できるのは ${PSEUDONYMIZE_MAX_FILES} 件までです`
                   : PSEUDONYMIZE_NOTICE
               }
@@ -674,7 +679,7 @@ function CsvLogsTab() {
                   </td>
                   <td className="py-3 px-3">
                     {row.fileType === "ap_metrics" ? (
-                      <a
+                      <DownloadLink
                         href={getSnapshotDownloadUrl(
                           row.filename,
                           selectedSiteId || undefined,
@@ -686,9 +691,9 @@ function CsvLogsTab() {
                       >
                         <Download className="w-3 h-3" />
                         {selectedSiteId || selectedApId ? "Filtered DL" : "Download"}
-                      </a>
+                      </DownloadLink>
                     ) : row.fileType === "sle_metrics" ? (
-                      <a
+                      <DownloadLink
                         href={getLogDownloadUrl(row.filename)}
                         download
                         className="flex items-center gap-1 px-2 py-1 rounded border text-xs transition-all whitespace-nowrap"
@@ -696,9 +701,9 @@ function CsvLogsTab() {
                       >
                         <Download className="w-3 h-3" />
                         Download
-                      </a>
+                      </DownloadLink>
                     ) : row.fileType === "client_metrics" ? (
-                      <a
+                      <DownloadLink
                         href={getLogFilteredDownloadUrl(row.filename, {
                           siteId: selectedSiteId || undefined,
                           apMac: selectedApMac || undefined,
@@ -710,9 +715,9 @@ function CsvLogsTab() {
                       >
                         <Download className="w-3 h-3" />
                         {selectedSiteId || selectedApMac || selectedClientMac ? "Filtered DL" : "Download"}
-                      </a>
+                      </DownloadLink>
                     ) : (
-                      <a
+                      <DownloadLink
                         href={getLogDownloadUrl(row.filename)}
                         download
                         className="flex items-center gap-1 px-2 py-1 rounded border text-xs transition-all whitespace-nowrap"
@@ -720,7 +725,7 @@ function CsvLogsTab() {
                       >
                         <Download className="w-3 h-3" />
                         Download
-                      </a>
+                      </DownloadLink>
                     )}
                   </td>
                 </tr>

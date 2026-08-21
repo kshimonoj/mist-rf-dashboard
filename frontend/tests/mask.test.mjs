@@ -21,6 +21,9 @@ import {
   scrubText,
   resolveKind,
   DEMO_ADDRESS,
+  downloadsDisabled,
+  floorMapBlocked,
+  prefetchForMask,
 } from "../src/lib/mask.ts";
 
 /** 各テストを独立したレジストリで始める（採番の持ち越しを避ける） */
@@ -344,6 +347,73 @@ test("target_name の種別は target_type で決まる", () => {
   reset();
   const client = maskPayload({ target_type: "client", target_name: "kshimono-mbp" });
   assert.equal(client.target_name, "Client-001");
+});
+
+// ---------------------------------------------------------------------------
+// 10. ダウンロード / Floor Map の一律無効化（29番: マスク中の事故防止）
+// ---------------------------------------------------------------------------
+
+test("マスク ON のときダウンロードは無効化され、OFF のときは無効化されない", () => {
+  setMaskEnabled(true);
+  try {
+    assert.equal(downloadsDisabled(), true);
+  } finally {
+    setMaskEnabled(false);
+  }
+  assert.equal(downloadsDisabled(), false);
+});
+
+test("マスク ON のとき Floor Map は表示をブロックされ、OFF のときはブロックされない", () => {
+  setMaskEnabled(true);
+  try {
+    assert.equal(floorMapBlocked(), true);
+  } finally {
+    setMaskEnabled(false);
+  }
+  assert.equal(floorMapBlocked(), false);
+});
+
+// ---------------------------------------------------------------------------
+// 11. 自由文の取りこぼし対策: AP 名の先行取得（29番）
+// ---------------------------------------------------------------------------
+
+test("先行取得（別応答）で採番済みの AP 名は、その後の自由文からも落ちる", () => {
+  // Hang AP / Floor Peak の「サイト選択時に AP 一覧を先行取得する」を模する:
+  // 1 つ目の応答（AP 一覧）で ap_name を採番したあと、2 つ目の応答（警告文）の中の
+  // 同じ AP 名も置換されることを確認する。
+  maskPayload([{ ap_name: "STASW-05F-AP63E-0190", mac: "a8:f7:d9:81:e2:da" }]);
+  const out = maskPayload({
+    warnings: ["STASW-05F-AP63E-0190 の応答が途絶えています"],
+  });
+  assert.ok(!out.warnings[0].includes("STASW-05F-AP63E-0190"), out.warnings[0]);
+  assert.ok(out.warnings[0].includes("AP-001"), out.warnings[0]);
+});
+
+test("既知の限界: 先行取得していない AP 名は自由文にそのまま残る", () => {
+  // 一覧に含まれない AP（撤去済み等）の名前は、警告文の中だけに出てきても落とせない。
+  // 挙動が変わったら気づけるよう、ここで固定する。
+  const out = scrubText("STASW-05F-AP63E-9999 の応答が途絶えています");
+  assert.ok(out.includes("STASW-05F-AP63E-9999"), out);
+});
+
+test("prefetchForMask はマスク OFF のとき取得関数を呼ばない", async () => {
+  setMaskEnabled(false);
+  let called = false;
+  await prefetchForMask(async () => { called = true; });
+  assert.equal(called, false);
+});
+
+test("prefetchForMask はマスク ON のとき取得関数を呼び、失敗しても投げない", async () => {
+  setMaskEnabled(true);
+  try {
+    let called = false;
+    await prefetchForMask(async () => { called = true; });
+    assert.equal(called, true);
+
+    await assert.doesNotReject(prefetchForMask(async () => { throw new Error("network error"); }));
+  } finally {
+    setMaskEnabled(false);
+  }
 });
 
 test("ホスト名の欄に MAC が入っていれば MAC として変換する", () => {

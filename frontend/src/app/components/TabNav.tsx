@@ -3,6 +3,8 @@
 import { BarChart3, History as HistoryIcon, Map, Search, ZapOff } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useMask } from "@/app/providers";
+import { FLOOR_MAP_BLOCKED_TITLE } from "@/lib/mask";
 
 export type HomeTab = "Site Overview" | "Floor Map";
 
@@ -38,6 +40,7 @@ function tabStyle(active: boolean) {
 export default function TabNav({ homeTab, onHomeTabChange }: TabNavProps) {
   const pathname = usePathname();
   const isHome = pathname === "/";
+  const { masked } = useMask();
 
   return (
     <nav
@@ -62,14 +65,27 @@ export default function TabNav({ homeTab, onHomeTabChange }: TabNavProps) {
 
       {isHome ? (
         <button
-          onClick={() => onHomeTabChange?.("Floor Map")}
-          className={tabClass}
+          onClick={() => !masked && onHomeTabChange?.("Floor Map")}
+          disabled={masked}
+          title={masked ? FLOOR_MAP_BLOCKED_TITLE : undefined}
+          className={`${tabClass} ${masked ? "opacity-40 cursor-not-allowed" : ""}`}
           style={tabStyle(homeTab === "Floor Map")}
           aria-current={homeTab === "Floor Map" ? "page" : undefined}
+          aria-disabled={masked}
         >
           <Map className="w-3.5 h-3.5" />
           Floor Map
         </button>
+      ) : masked ? (
+        <span
+          title={FLOOR_MAP_BLOCKED_TITLE}
+          aria-disabled="true"
+          className={`${tabClass} opacity-40 cursor-not-allowed`}
+          style={tabStyle(false)}
+        >
+          <Map className="w-3.5 h-3.5" />
+          Floor Map
+        </span>
       ) : (
         <Link href="/?tab=floormap" className={tabClass} style={tabStyle(false)}>
           <Map className="w-3.5 h-3.5" />

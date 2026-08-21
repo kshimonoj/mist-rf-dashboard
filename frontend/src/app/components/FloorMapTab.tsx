@@ -1,5 +1,6 @@
 "use client";
 
+import { EyeOff } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
@@ -15,6 +16,8 @@ import {
   FloorMapSaveRow,
   SiteSimple,
 } from "@/lib/api";
+import { useMask } from "@/app/providers";
+import { FLOOR_MAP_BLOCKED_TITLE } from "@/lib/mask";
 
 export interface FloorMapTabHandle {
   getRows: () => FloorMapSaveRow[] | null;
@@ -286,6 +289,7 @@ interface FloorMapTabProps {
 
 const FloorMapTab = forwardRef<FloorMapTabHandle, FloorMapTabProps>(
 function FloorMapTab({ snapshotSlot } = {}, ref) {
+  const { masked } = useMask();
   const [selectedSiteId, setSelectedSiteId] = useState("");
   const [selectedMapId, setSelectedMapId] = useState("");
   const [activeBandKey, setActiveBandKey] = useState<BandKey>("radio_5");
@@ -390,6 +394,26 @@ function FloorMapTab({ snapshotSlot } = {}, ref) {
       : null;
 
   const showGrid = !imageUrl || imgError;
+
+  // 背景画像は <img src> で直接参照しており JSON を経由しないため、lib/api.ts の
+  // フィールド名変換が原理的に効かない（部屋名・棟名が画像に焼き込まれている）。
+  // 一律で内容を表示しない（URL 直叩き・ブックマークからの直接遷移でも効く）。
+  if (masked) {
+    return (
+      <div
+        className="flex items-center justify-center rounded-lg border h-40 gap-2"
+        style={{
+          borderColor: "var(--border-cyan)",
+          backgroundColor: "var(--bg-card)",
+          color: "var(--text-muted)",
+        }}
+        role="status"
+      >
+        <EyeOff className="w-4 h-4 shrink-0" />
+        <p className="text-sm">{FLOOR_MAP_BLOCKED_TITLE}</p>
+      </div>
+    );
+  }
 
   return (
     <div>

@@ -667,3 +667,41 @@ export function maskMessage(text: string): string {
   persistRegistry();
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// ダウンロード・Floor Map の一律無効化（29番）
+// ---------------------------------------------------------------------------
+//
+// マスク ON 中、ダウンロードの一部は実名で落ち、一部は仮名の値をそのままクエリ・
+// パスに渡すため壊れる（空の CSV、フロア不一致など）。壊れるものだけを止めると
+// 「押せるものと押せないものが混在」して利用者が覚えていなければならなくなるので、
+// **一律で無効化する。** Floor Map は背景画像に部屋名・棟名が焼き込まれており
+// `lib/api.ts` の変換が原理的に効かないため、同様に一律で無効化する。
+
+/** マスク ON 中はすべてのダウンロード導線を無効化する */
+export function downloadsDisabled(): boolean {
+  return isMaskEnabled();
+}
+
+export const DOWNLOAD_DISABLED_TITLE = "マスク中はダウンロードできません";
+
+/** マスク ON 中は Floor Map の内容を表示しない */
+export function floorMapBlocked(): boolean {
+  return isMaskEnabled();
+}
+
+export const FLOOR_MAP_BLOCKED_TITLE = "マスク中は表示できません（背景画像は匿名化できません）";
+
+/**
+ * マスク ON のときだけ、自由文（警告等）の置換に備えて実名（AP 名等）を先行取得する。
+ * OFF のときは何もしない（余計なリクエストを増やさない）。失敗しても画面の機能は
+ * 止めない（コンソールに記録するだけ）。
+ */
+export async function prefetchForMask(fetcher: () => Promise<unknown>): Promise<void> {
+  if (!isMaskEnabled()) return;
+  try {
+    await fetcher();
+  } catch (e) {
+    console.error("[mask] prefetch failed", e);
+  }
+}

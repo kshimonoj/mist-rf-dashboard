@@ -10,6 +10,8 @@ import { useTimezone } from "@/app/providers";
 import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import FloorMapTab from "@/app/components/FloorMapTab";
+import { useMask } from "@/app/providers";
+import { FLOOR_MAP_BLOCKED_TITLE } from "@/lib/mask";
 
 const TABS = ["Site Overview", "Floor Map"] as const;
 type TabName = typeof TABS[number];
@@ -17,6 +19,7 @@ type TabName = typeof TABS[number];
 export default function SnapshotSitePage({ params }: { params: { slot: string } }) {
   const slot = Number(params.slot);
   const { timezone } = useTimezone();
+  const { masked } = useMask();
   const [activeTab, setActiveTab] = useState<TabName>("Site Overview");
 
   const { data: metas } = useSWR<SnapshotDbMeta[]>("snapshot-dbs", fetchSnapshotDbs);
@@ -82,20 +85,26 @@ export default function SnapshotSitePage({ params }: { params: { slot: string } 
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b" style={{ borderColor: "var(--chart-grid)" }}>
-        {TABS.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px"
-            style={{
-              borderBottomColor: activeTab === tab ? "var(--cyan)" : "transparent",
-              color: activeTab === tab ? "var(--cyan)" : "var(--text-muted)",
-            }}
-          >
-            {tab === "Floor Map" && <Map className="w-4 h-4" />}
-            {tab}
-          </button>
-        ))}
+        {TABS.map((tab) => {
+          const blocked = tab === "Floor Map" && masked;
+          return (
+            <button
+              key={tab}
+              onClick={() => !blocked && setActiveTab(tab)}
+              disabled={blocked}
+              title={blocked ? FLOOR_MAP_BLOCKED_TITLE : undefined}
+              aria-disabled={blocked}
+              className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${blocked ? "opacity-40 cursor-not-allowed" : ""}`}
+              style={{
+                borderBottomColor: activeTab === tab ? "var(--cyan)" : "transparent",
+                color: activeTab === tab ? "var(--cyan)" : "var(--text-muted)",
+              }}
+            >
+              {tab === "Floor Map" && <Map className="w-4 h-4" />}
+              {tab}
+            </button>
+          );
+        })}
       </div>
 
       {activeTab === "Site Overview" && (

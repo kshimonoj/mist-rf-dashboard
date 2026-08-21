@@ -9,7 +9,7 @@ import useSWR from "swr";
 import {
   deleteFloorPeakSavedResult, fetchFloorPeakJob, fetchFloorPeakLogSites,
   fetchFloorPeakResult, fetchFloorPeakSavedResults, fetchFloorPeakSavedRows,
-  getFloorPeakDownloadUrl, startFloorPeakAnalysis,
+  getFloorPeakDownloadUrl, startFloorPeakAnalysis, fetchSiteAps,
   FloorPeakAnalyzeBody, FloorPeakJob, FloorPeakMeta, FloorPeakPhase, FloorPeakResult,
   FloorPeakRow, FloorPeakSavedResult, HangapLogSite, HangapLogSites,
 } from "@/lib/api";
@@ -17,8 +17,10 @@ import FloorPeakChart from "@/app/components/FloorPeakChart";
 import TabNav from "@/app/components/TabNav";
 import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
+import DownloadLink from "@/app/components/DownloadLink";
 import { toLocalString } from "@/lib/time";
-import { useTimezone } from "@/app/providers";
+import { useTimezone, useMask } from "@/app/providers";
+import { prefetchForMask } from "@/lib/mask";
 
 const PHASE_LABELS: Record<FloorPeakPhase, string> = {
   loading: "読み込み中",
@@ -321,7 +323,7 @@ function ResultView({
               </span>
               <div className="ml-auto flex items-center gap-2">
                 {(["xlsx", "csv"] as const).map((format) => (
-                  <a
+                  <DownloadLink
                     key={format}
                     href={getFloorPeakDownloadUrl(source, format, floor)}
                     className="flex items-center gap-1 px-2 py-1 border rounded text-xs"
@@ -329,7 +331,7 @@ function ResultView({
                   >
                     <Download className="w-3.5 h-3.5" />
                     {format}
-                  </a>
+                  </DownloadLink>
                 ))}
               </div>
             </div>
@@ -534,15 +536,16 @@ function SavedResults({
                         {viewingName === row.name ? "表示中" : "表示"}
                       </button>
                       {(["xlsx", "csv"] as const).map((format) => (
-                        <a
+                        <DownloadLink
                           key={format}
                           href={getFloorPeakDownloadUrl({ kind: "saved", name: row.name }, format)}
-                          className={`flex items-center gap-1 px-2 py-1 border rounded text-xs ${row.files[format] === undefined ? "pointer-events-none opacity-40" : ""}`}
+                          className="flex items-center gap-1 px-2 py-1 border rounded text-xs"
                           style={linkStyle}
+                          disabled={row.files[format] === undefined}
                         >
                           <Download className="w-3.5 h-3.5" />
                           {format}
-                        </a>
+                        </DownloadLink>
                       ))}
                       <button
                         onClick={() => handleDelete(row)}
@@ -567,6 +570,7 @@ function SavedResults({
 
 export default function FloorPeakPage() {
   const { timezone } = useTimezone();
+  const { masked } = useMask();
 
   const [site, setSite] = useState<string | null>(null);
   /** "window": 期間からピークを自動選択 / "at": 時点を手動指定 */
@@ -593,6 +597,13 @@ export default function FloorPeakPage() {
     if (site !== null || !logSites) return;
     if (logSites.sites.length === 1) setSite(logSites.sites[0].site_id);
   }, [logSites, site]);
+
+  // マスク ON 中のみ: 選択されたサイトの AP 一覧を先行取得し、警告文（自由文）に
+  // 出てくる AP 名をあらかじめ採番しておく。取りこぼし（一覧に無い AP 名）は残る。
+  useEffect(() => {
+    if (!masked || !site) return;
+    prefetchForMask(() => fetchSiteAps(site));
+  }, [masked, site]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(JOB_STORAGE_KEY);
