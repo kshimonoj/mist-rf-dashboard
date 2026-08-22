@@ -20,6 +20,9 @@ Wi-Fi issues across all sites.
   co-channel interference summary per band
 - **Floor Peak**: pick the busiest moment of a site over a period and chart the top-20 APs by
   connected clients on each floor (see [Floor Peak Analysis](#floor-peak-analysis-busiest-moment-per-floor))
+- **RRM**: count RRM / radar channel changes across sites, split them into RADAR / POST_RADAR / RRM,
+  and show the metrics just before and just after each change
+  (see [RRM / RADAR Channel-Change Analysis](#rrm--radar-channel-change-analysis))
 
 ![Site Detail with SLE](docs/screenshots/02-site-detail.png)
 
@@ -554,6 +557,135 @@ saved results are never read back as input.
 | `FLOORPEAK_RESULTS_MAX_FILES` | `50` | Number of result **sets** to keep (xlsx+csv+json = 1 set) |
 | `FLOORPEAK_RESULTS_MAX_TOTAL_MB` | `500` | Total size cap for `data/floorpeak_results/` |
 
+## RRM / RADAR Channel-Change Analysis
+
+`backend/rrm/` is the first analysis that treats **`ap_events` as its primary data source**
+(Hang AP only ever used it as a side channel). For a set of sites over a period it answers:
+**how often did RRM change a channel, why, and how many clients were on the AP when it happened.**
+It reads the same collected CSV logs offline (no network access, no LLM calls) and shares no code
+with `hangap` / `floorpeak` beyond reusing `hangap.loader` to read the logs.
+
+### What counts as a channel change
+
+Only `AP_RRM_ACTION` rows where `pre_channel != channel`. They are split into three classes:
+
+| Class | Rule |
+|---|---|
+| `RADAR` | `reason = radar-detected` |
+| `POST_RADAR` | `reason = post-radar` |
+| `RRM` | every other reason (`scheduled-site-rrm`, `interference-*`, `auto-channel-selection`, …) |
+
+`post-radar` gets its own class because putting it in either of the other two misrepresents it —
+it is the follow-up work after a radar hit, not the hit itself and not ordinary RRM.
+
+Rows where `pre_channel == channel` are **not** channel changes. They are periodic RRM evaluating
+the situation and deciding to keep the current channel — normal behaviour, not a fault. They are
+counted separately as **no-op** per class and stay in the detail table; hiding them would hide the
+fact that RRM is running at all.
+
+### Radar detections are counted independently
+
+`AP_RADAR_DETECTED` carries its own `pre_channel → channel`, and in real logs some detections have
+**no matching `AP_RRM_ACTION` at all**. Counting only `AP_RRM_ACTION` therefore loses radar events.
+The summary reports detections, how many of them changed a channel, and how many had no matching
+action (same AP, `AP_RRM_ACTION` with `reason = radar-detected`, within ±300 s). One detection with
+three nearby actions is still **one** detection — the match is decided per detection, never per action.
+
+`AP_CONFIG_CHANGED_BY_RRM` has no `reason` and appears in roughly the same numbers as
+`AP_RRM_ACTION`, so it is **not used** in the analysis. Its count is still reported, labelled as a
+reference figure, so a future decision has data to stand on.
+
+### Before / after metrics
+
+For each event the **single sample immediately before and the single sample immediately after** are
+taken from `ap_metrics` for the same AP (matched on `ap_mac`) — no averaging, since an average
+smooths away exactly what the change did. "Before" is the last sample strictly earlier than the
+event; "after" is the first sample at or later than it. The sampling interval comes from
+`hangap.loader`'s estimate (30 s in this deployment); if it cannot be estimated the analysis falls
+back to 300 s **and says so in the warnings**.
+
+`match_status` records why a row could not be matched: `no_before`, `no_after`, `too_far` (a sample
+is 3× the interval away or more) or `no_ap` (the AP has no samples at all). Those rows keep their
+raw values and timestamps so the gap is visible, but their **deltas are left empty** and the row is
+counted as *unmatched* in the summary. Nothing is dropped.
+
+A row is flagged `contaminated` when another channel-change event for the same AP
+(`AP_RRM_ACTION` or `AP_RADAR_DETECTED`, any band) falls inside the before→after interval. Utilization
+is reported for all three bands, so a change on another band moves the numbers too. Contaminated
+rows are **kept and marked**, never removed — the point is to show which rows you cannot trust.
+
+`impact_clients` is `clients_before`: the number of clients attached to the AP right before the
+channel changed. Aggregated impact sums only count rows that actually changed channel.
+
+### Output
+
+The csv/xlsx columns are fixed (and ASCII, so a future pseudonymizer schema can be added without
+tripping its non-ASCII leak check):
+
+```
+event_timestamp, classification, reason, site_name, ap_name, ap_mac, band,
+pre_channel, post_channel, channel_changed,
+before_timestamp, after_timestamp, match_status, contaminated,
+clients_before, clients_after, clients_delta,
+util_24_before, util_24_after, util_24_delta,
+util_5_before,  util_5_after,  util_5_delta,
+util_6_before,  util_6_after,  util_6_delta,
+impact_clients
+```
+
+There is deliberately **no channel delta** column: the "+16" in 36→52 has no physical meaning, so
+`pre_channel` and `post_channel` are shown side by side instead.
+
+The xlsx has three sheets — `chart` (stacked bar of channel changes per hour, plus impact per
+class), `data` (every detail row) and `summary` (per class, per site, per AP and the full hourly
+series). When there are more hourly buckets than the chart can show legibly, the chart is limited
+to the most recent ones and **the sheet says so**; the full series stays in `summary` and the csv.
+
+### CLI
+
+```bash
+python -m rrm analyze --logs /path/to/logs --out ./out            # every site
+python -m rrm analyze --logs /path/to/logs --out ./out   --site '1_Kyobashi' --site '3_HPEN_Osaka'   --from '2026-08-20 00:00' --to '2026-08-22 00:00'
+```
+
+`--site` may be repeated and accepts a `site_id` or a `site_name`; omitting it analyses every site.
+Unlike Floor Peak there is no single-site requirement, because nothing here is defined per-site the
+way "the site's peak" is. Exit codes: `0` OK, `1` input error (unknown site, unreadable logs, no
+`ap_events` at all), `2` output error.
+
+### API
+
+```bash
+curl -s localhost:8008/api/rrm/sites
+curl -s -X POST localhost:8008/api/rrm/analyze -H 'Content-Type: application/json' \
+  -d '{"sites":["<site_id>"],"from":"2026-08-20 00:00","to":"2026-08-22 00:00"}'
+curl -s localhost:8008/api/rrm/jobs/<job_id>            # status / phase / meta / warnings
+curl -s localhost:8008/api/rrm/jobs/<job_id>/result     # rows + meta + warnings
+curl -s 'localhost:8008/api/rrm/jobs/<job_id>/download?format=xlsx' -o rrm.xlsx
+curl -s localhost:8008/api/rrm/results
+curl -s localhost:8008/api/rrm/results/rrm_result_20260822_231245/rows
+curl -s -X DELETE localhost:8008/api/rrm/results/rrm_result_20260822_231245
+```
+
+CLI and API go through `rrm.analysis`, so the downloaded csv is byte-for-byte what the CLI writes.
+`results/<name>/rows` reads the saved csv and json back and **never re-runs the analysis**,
+returning the same shape as `jobs/<job_id>/result`. One job runs at a time (a second POST gets 409
+with the running `job_id`).
+
+An empty window is a **result, not a failure**: if RRM did not act during the period the job
+completes with zero rows and a warning saying so. "No `ap_events` in the logs at all" is a failure,
+because that means there was nothing to analyse.
+
+Results are archived to `data/rrm_results/` as `rrm_result_<YYYYMMDD_HHMMSS>.{xlsx,csv,json}` with
+the same whole-set rotation as Hang AP and Floor Peak, driven by its **own** limits so no analysis
+can rotate another's records away. `rrm_results` is in `hangap.loader.EXCLUDED_DIR_NAMES`, so saved
+results are never read back as input.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RRM_RESULTS_MAX_FILES` | `50` | Number of result **sets** to keep (xlsx+csv+json = 1 set) |
+| `RRM_RESULTS_MAX_TOTAL_MB` | `500` | Total size cap for `data/rrm_results/` |
+
 ## Data Persistence
 
 All data is stored in the `./data/` directory:
@@ -563,6 +695,7 @@ data/
 ├── logs/             # Auto-saved CSV logs (AP / SLE / client metrics, floor map summary)
 ├── hangap_results/   # Saved hang-AP analysis results (xlsx + csv + json per run, rotated)
 ├── floorpeak_results/ # Saved floor-peak analysis results (xlsx + csv + json per run, rotated)
+├── rrm_results/      # Saved RRM / RADAR analysis results (xlsx + csv + json per run, rotated)
 └── snapshots/        # Snapshot database files (max 2 slots)
 ```
 

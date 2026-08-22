@@ -140,6 +140,10 @@ function ensureRegistry(): Registry {
       const map = new Map<string, number>();
       let max = 0;
       for (const [value, idx] of Object.entries(values)) {
+        // 過去のバグ（識別子が実名として採番されるケース）で保存された対応表が
+        // 残っていれば、読み込み時に捨てて自己修復する（自由文の中で識別子が
+        // 仮名に化けたまま固定化されるのを防ぐ）
+        if (isIdentifier(value)) continue;
         map.set(value, idx);
         if (idx > max) max = idx;
       }
@@ -391,6 +395,17 @@ export const DEMO_ADDRESS = "1-1-1 Demo, Tokyo, Japan";
 
 /** ローダが作る `サイト名 [site_id]` の形。ID は URL と同じ扱いで残す（PRECONDITION 4） */
 const SITE_LABEL = /^(.*?)\s*\[([^\]]*)\]$/;
+/**
+ * UUID そのもの。`requested_site(s)` のように **名前でも ID でも来る欄** があるため、
+ * ID を名前として採番しないよう先に弾く。採番してしまうと ID が実名の対応表に載り、
+ * 自由文（`condition_text` の `[site_id]` など）の中の ID まで置き換わって
+ * 「Site D [Site A]」のような読めない表記になる。ID は URL と同じ扱いで残す。
+ */
+const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function isIdentifier(value: string): boolean {
+  return UUID.test(value.trim());
+}
 /** 対象サイトの指定が無いときの表記（backend/hangap/analysis.py ALL_SITES_TEXT ほか） */
 const KEEP_AS_IS = ["すべて", "(指定なし)", "-", ""];
 
@@ -400,10 +415,14 @@ function maskSiteLabel(raw: string): string {
   const m = SITE_LABEL.exec(trimmed);
   if (m) {
     const name = m[1].trim();
-    const masked = name === "" ? "" : maskNamed("siteName", name);
+    const masked = name === "" || isIdentifier(name) ? name : maskNamed("siteName", name);
     return `${masked} [${m[2]}]`;
   }
-  return maskNamed("siteName", trimmed);
+  // 括弧の無い単独の値（例: sites_text がローダの解決前に site_id だけを
+  // エコーする経路。hangap.analysis.fmt_sites 等）。ID を実名として採番すると
+  // 自由文の中の ID まで仮名に化ける（「Site D [Site A]」のような読めない表記）ので、
+  // ここでも isIdentifier で弾く。
+  return isIdentifier(trimmed) ? raw : maskNamed("siteName", trimmed);
 }
 
 /** `A [id], B [id2]` のように並んだ対象サイトの表記 */
@@ -456,6 +475,10 @@ const KEY_KINDS: Record<string, MaskKind> = {
   site_name: "siteName",
   requested_site: "siteName",
   site_label: "siteLabel",
+  // 複数サイトを扱う分析（RRM）は配列で返す。`transformValue` が要素ごとに回す
+  site_names: "siteName",
+  requested_sites: "siteName",
+  site_labels: "siteLabel",
   address: "address",
   // フロア
   map_name: "floorName",
@@ -547,9 +570,9 @@ export function maskScalar(kind: MaskKind, raw: string): string {
     case "clientName":
       return looksLikeMac(raw) ? maskMac(raw) : maskNamed("clientName", raw);
     case "siteName":
-      return maskNamed("siteName", raw);
+      return isIdentifier(raw) ? raw : maskNamed("siteName", raw);
     case "siteLabel":
-      return maskSiteLabel(raw);
+      return isIdentifier(raw) ? raw : maskSiteLabel(raw);
     case "floorName":
       return maskNamed("floorName", raw);
     case "ssid":

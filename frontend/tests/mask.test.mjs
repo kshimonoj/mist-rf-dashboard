@@ -426,3 +426,123 @@ test("API トークンは桁数を保って伏せられる", () => {
   assert.equal(out.mist_api_token, "**********");
   assert.equal(out.mist_org_id, "org-uuid");
 });
+
+// ---------------------------------------------------------------------------
+// 複数サイトを扱う分析（RRM）の応答
+// ---------------------------------------------------------------------------
+
+test("site_names / site_labels / requested_sites の配列も仮名化される", () => {
+  const out = maskPayload({
+    requested_sites: ["1_Kyobashi", "3_HPEN_Osaka"],
+    site_names: ["1_Kyobashi", "3_HPEN_Osaka"],
+    site_labels: ["1_Kyobashi [site-uuid-1]", "3_HPEN_Osaka [site-uuid-2]"],
+    site_ids: ["site-uuid-1", "site-uuid-2"],
+  });
+
+  // 採番の順序は実名のハッシュ順なので、値そのものではなく対応関係を見る
+  assert.deepEqual([...out.site_names].sort(), ["Site A", "Site B"]);
+  assert.deepEqual(out.requested_sites, out.site_names);
+  assert.deepEqual(out.site_labels, [
+    `${out.site_names[0]} [site-uuid-1]`,
+    `${out.site_names[1]} [site-uuid-2]`,
+  ]);
+  // site_id は URL と同じ扱いで残す（機能のキーなので置き換えない）
+  assert.deepEqual(out.site_ids, ["site-uuid-1", "site-uuid-2"]);
+});
+
+test("RRM の明細行と AP 別集計は AP 名・MAC・サイト名が仮名化される", () => {
+  const out = maskPayload({
+    job_id: "abc",
+    columns: ["event_timestamp", "ap_name"],
+    rows: [
+      {
+        event_timestamp: "2026-08-20 02:01:29",
+        classification: "RADAR",
+        reason: "radar-detected",
+        site_name: "1_Kyobashi",
+        ap_name: "STASW-05F-AP63E-0190",
+        ap_mac: "a8:f7:d9:81:e2:da",
+        band: "5",
+        match_status: "too_far",
+        contaminated: true,
+        impact_clients: 3,
+      },
+    ],
+    meta: {
+      by_ap: [{ site_name: "1_Kyobashi", ap_name: "STASW-05F-AP63E-0190", ap_mac: "a8:f7:d9:81:e2:da", changes: 4 }],
+      hourly: [{ bucket: "2026-08-20 02:00:00", changes_RADAR: 1, changes_total: 1 }],
+      class_colors: { RADAR: "D62728", POST_RADAR: "FF7F0E", RRM: "1F77B4" },
+    },
+  });
+
+  const row = out.rows[0];
+  assert.equal(row.ap_name, "AP-001");
+  assert.equal(row.site_name, "Site A");
+  assert.equal(row.ap_mac, "02:f0:00:00:00:01");
+  // 分類・理由・照合状態・数値は分析の意味そのものなので変えない
+  assert.equal(row.classification, "RADAR");
+  assert.equal(row.reason, "radar-detected");
+  assert.equal(row.match_status, "too_far");
+  assert.equal(row.contaminated, true);
+  assert.equal(row.impact_clients, 3);
+
+  assert.equal(out.meta.by_ap[0].ap_name, "AP-001");
+  assert.equal(out.meta.by_ap[0].site_name, "Site A");
+  assert.deepEqual(out.meta.hourly[0], { bucket: "2026-08-20 02:00:00", changes_RADAR: 1, changes_total: 1 });
+  assert.deepEqual(out.meta.class_colors, { RADAR: "D62728", POST_RADAR: "FF7F0E", RRM: "1F77B4" });
+});
+
+test("site_id（UUID）は名前の欄に入っていても採番しない", () => {
+  // requested_site(s) は UI からは site_id が来る。ID を名前として採番すると
+  // 対応表に載り、自由文の中の `[site_id]` まで置き換わって読めなくなる
+  const out = maskPayload({
+    requested_sites: ["bcb8f2c8-5cdb-4c3d-86f7-fe1c3a24c1ed"],
+    site_names: ["1_Kyobashi"],
+    site_labels: ["1_Kyobashi [bcb8f2c8-5cdb-4c3d-86f7-fe1c3a24c1ed]"],
+    condition_text: "分析条件: 対象サイト=1_Kyobashi [bcb8f2c8-5cdb-4c3d-86f7-fe1c3a24c1ed] / 期間 …",
+  });
+
+  assert.deepEqual(out.requested_sites, ["bcb8f2c8-5cdb-4c3d-86f7-fe1c3a24c1ed"]);
+  assert.deepEqual(out.site_labels, ["Site A [bcb8f2c8-5cdb-4c3d-86f7-fe1c3a24c1ed]"]);
+  assert.ok(out.condition_text.includes("Site A [bcb8f2c8-5cdb-4c3d-86f7-fe1c3a24c1ed]"));
+  assert.ok(!out.condition_text.includes("1_Kyobashi"));
+});
+
+test("自由文の対象サイトに括弧の無い生の site_id（UUID）が来ても、実名として採番しない", () => {
+  // hangap.analysis.fmt_sites 等、ローダ解決前の site_id をそのままエコーする経路がある。
+  // ここで採番すると ID が実名の対応表に載り、以後この UUID が出るたびに仮名（Site X）へ
+  // 化けて固定化される（31番で実データにより確認したバグ）
+  const uuid = "bcb8f2c8-5cdb-4c3d-86f7-fe1c3a24c1ed";
+  const out = maskPayload({
+    condition_text: `分析条件: 対象サイト=${uuid} / 窓 (指定なし) 〜 (指定なし)`,
+  });
+  assert.ok(out.condition_text.includes(uuid));
+
+  // 採番されていれば、同じ UUID が別の自由文に現れたときも仮名に置き換わってしまう
+  const out2 = maskPayload({
+    result_summary_text: `参考: 対象サイト ${uuid} のログのみ使用`,
+  });
+  assert.ok(out2.result_summary_text.includes(uuid));
+});
+
+test("複数の生 site_id（UUID）が並んでも、どれも実名として採番しない", () => {
+  const a = "bcb8f2c8-5cdb-4c3d-86f7-fe1c3a24c1ed";
+  const b = "0a9b3e7a-a1ba-455c-996c-cefddd83c3b0";
+  const out = maskPayload({
+    condition_text: `分析条件: 対象サイト=${a}, ${b} / 期間 (指定なし)`,
+  });
+  assert.ok(out.condition_text.includes(a));
+  assert.ok(out.condition_text.includes(b));
+});
+
+test("RRM の condition_text は対象サイトが落ちる", () => {
+  const out = maskPayload({
+    site_names: ["1_Kyobashi"],
+    condition_text:
+      "分析条件: 対象サイト=1_Kyobashi [site-uuid-1] / 期間 2026-08-20 00:00:00 〜 2026-08-22 00:00:00（半開区間 [start, end)） / バケット幅=3600 秒",
+  });
+
+  assert.ok(!out.condition_text.includes("1_Kyobashi"));
+  assert.ok(out.condition_text.includes("Site A [site-uuid-1]"));
+  assert.ok(out.condition_text.includes("バケット幅=3600 秒"));
+});

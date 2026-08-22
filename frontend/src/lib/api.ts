@@ -1494,3 +1494,292 @@ export function floorPeakModelColor(model: string, meta: FloorPeakMeta): string 
   const hex = table[(model ?? "").trim().toUpperCase()] ?? meta.default_model_color ?? "9E9E9E";
   return `#${hex}`;
 }
+
+// ── RRM / RADAR channel change analysis (/api/rrm) ───────────────────────────
+// AP_RRM_ACTION によるチャネル変更を RADAR / POST_RADAR / RRM の 3 分類で数え、
+// 変更前後の ap_metrics（接続端末数・2.4/5/6GHz の利用率）を突き合わせた結果。
+// 分類・色・集計・列の定義は **API が返すものをそのまま使う**。
+// ここで再計算・再整形すると CLI / API / UI で結果が食い違う。
+
+export type RrmStatus = "running" | "done" | "failed";
+export type RrmPhase = "loading" | "events" | "metrics" | "aggregate" | "writing";
+
+/** 分類。`meta.classifications` の並び順で表示する */
+export type RrmClassification = "RADAR" | "POST_RADAR" | "RRM";
+
+/** 前後サンプルの照合結果。`ok` 以外は差分を出していない */
+export type RrmMatchStatus = "ok" | "no_before" | "no_after" | "too_far" | "no_ap";
+
+/** 1 時間バケットの時系列（分類別のチャネル変更回数とインパクト合計） */
+export interface RrmHourlyBucket {
+  bucket: string;
+  changes_RADAR: number;
+  changes_POST_RADAR: number;
+  changes_RRM: number;
+  changes_total: number;
+  impact_RADAR: number;
+  impact_POST_RADAR: number;
+  impact_RRM: number;
+  impact_total: number;
+}
+
+/** 分類別・サイト別で共通の統計 */
+export interface RrmGroupStats {
+  events: number;
+  changes: number;
+  noop: number;
+  unknown_channel: number;
+  impact_total: number;
+  impact_avg: number | null;
+  contaminated: number;
+  unmatched: number;
+  delta_clients_avg: number | null;
+  delta_util_24_avg: number | null;
+  delta_util_5_avg: number | null;
+  delta_util_6_avg: number | null;
+}
+
+export interface RrmClassSummary extends RrmGroupStats {
+  classification: RrmClassification;
+}
+
+export interface RrmSiteSummary extends RrmGroupStats {
+  site_name: string;
+  changes_RADAR: number;
+  changes_POST_RADAR: number;
+  changes_RRM: number;
+}
+
+export interface RrmApSummary {
+  site_name: string;
+  ap_name: string;
+  ap_mac: string;
+  changes: number;
+  impact_total: number;
+  changes_RADAR: number;
+  changes_POST_RADAR: number;
+  changes_RRM: number;
+}
+
+/**
+ * 分析条件と結果の前提。**画面単体で「いつの・どこの・何の値か」が分かること**が
+ * この構造体の目的なので、表示から省かないこと。
+ */
+export interface RrmMeta {
+  version: number;
+  requested_sites: string[];
+  site_ids: string[];
+  site_names: string[];
+  site_labels: string[];
+  window_start: string | null;
+  window_end: string | null;
+  bucket_seconds: number | null;
+  interval_seconds?: number;
+  interval_estimated?: boolean;
+  gap_factor?: number;
+  radar_match_seconds?: number;
+  event_count: number;
+  change_count: number;
+  noop_count: number;
+  unknown_channel_count?: number;
+  changes_by_class: Partial<Record<RrmClassification, number>>;
+  noop_by_class: Partial<Record<RrmClassification, number>>;
+  match_status_counts: Partial<Record<RrmMatchStatus, number>>;
+  unmatched_count: number;
+  contaminated_count: number;
+  impact_total: number;
+  /** AP_RADAR_DETECTED は AP_RRM_ACTION とは独立に数える */
+  radar_detected: number;
+  radar_with_change: number;
+  /** 対応する AP_RRM_ACTION が無い検知。**ACTION だけを数えると取りこぼす** */
+  radar_without_action: number;
+  /** 参考。reason を持たないため本分析では未使用 */
+  config_changed_by_rrm_count: number;
+  hourly: RrmHourlyBucket[];
+  by_classification: RrmClassSummary[];
+  by_site: RrmSiteSummary[];
+  by_ap: RrmApSummary[];
+  top_ap_count?: number;
+  chart_bucket_limit?: number;
+  chart_buckets_shown?: number;
+  chart_buckets_total?: number;
+  classifications?: RrmClassification[];
+  /** 分類 → 棒の色（RRGGBB）。**フロントで色分けを定義し直さない** */
+  class_colors?: Record<string, string>;
+  match_statuses?: RrmMatchStatus[];
+  files_scanned?: number;
+  metrics_files?: number;
+  events_files?: number;
+  unclassified_count?: number;
+  metrics_rows?: number;
+  events_rows_all?: number;
+  events_rows_in_window?: number;
+  condition_text: string;
+  warning_count: number;
+  warnings: string[];
+}
+
+export interface RrmRow {
+  event_timestamp: string;
+  classification: RrmClassification;
+  reason: string;
+  site_name: string;
+  ap_name: string;
+  ap_mac: string;
+  band: string;
+  pre_channel: number | null;
+  post_channel: number | null;
+  channel_changed: boolean;
+  before_timestamp: string;
+  after_timestamp: string;
+  match_status: RrmMatchStatus;
+  contaminated: boolean;
+  clients_before: number | null;
+  clients_after: number | null;
+  clients_delta: number | null;
+  util_24_before: number | null;
+  util_24_after: number | null;
+  util_24_delta: number | null;
+  util_5_before: number | null;
+  util_5_after: number | null;
+  util_5_delta: number | null;
+  util_6_before: number | null;
+  util_6_after: number | null;
+  util_6_delta: number | null;
+  impact_clients: number | null;
+}
+
+export interface RrmJob {
+  job_id: string;
+  status: RrmStatus;
+  phase: RrmPhase;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  meta: RrmMeta | null;
+  warnings: string[];
+}
+
+/**
+ * 結果。実行中ジョブ（jobs/{id}/result）と保存済み結果（results/{name}/rows）で
+ * **同じ形**が返るので、表示は同じコンポーネントで行う。
+ */
+export interface RrmResult {
+  job_id: string | null;
+  name: string | null;
+  columns: string[];
+  meta: RrmMeta;
+  warnings: string[];
+  rows: RrmRow[];
+}
+
+/** 保存済みの 1 組（xlsx / csv / json）の概要 */
+export interface RrmSavedResult extends RrmMeta {
+  /** rrm_result_YYYYMMDD_HHMMSS。表示・ダウンロード・削除のキー */
+  name: string;
+  saved_at: string | null;
+  files: Partial<Record<"xlsx" | "csv" | "json", number>>;
+  total_bytes: number;
+}
+
+/** 分析条件。**sites は複数指定可**（省略すると全サイト） */
+export interface RrmAnalyzeBody {
+  sites?: string[];
+  from?: string;
+  to?: string;
+}
+
+export interface RrmStartResult {
+  job_id: string;
+  conflict: boolean;
+  message?: string;
+}
+
+async function rrmDetail(res: Response): Promise<string | undefined> {
+  try {
+    const detail = (await res.json()).detail;
+    if (typeof detail === "string") return maskMessage(detail);
+    if (detail && typeof detail === "object") return maskedDetail(detail.message);
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+/** 分析対象の選択肢。`data/logs` に実際に含まれるサイト（Hang AP と同じ一覧） */
+export async function fetchRrmLogSites(refresh = false): Promise<HangapLogSites> {
+  const res = await fetch(`${API_BASE}/api/rrm/sites${refresh ? "?refresh=true" : ""}`);
+  if (!res.ok) throw new Error((await rrmDetail(res)) ?? `RRM sites error ${res.status}`);
+  return maskedJson(res);
+}
+
+export async function startRrmAnalysis(body: RrmAnalyzeBody): Promise<RrmStartResult> {
+  const res = await fetch(`${API_BASE}/api/rrm/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 409) {
+    let detail: { message?: string; job_id?: string } = {};
+    try { detail = (await res.json()).detail ?? {}; } catch { /* ignore */ }
+    return {
+      job_id: detail.job_id ?? "",
+      conflict: true,
+      message: maskMessage(detail.message ?? "別の分析が実行中です。"),
+    };
+  }
+  if (!res.ok) throw new Error((await rrmDetail(res)) ?? `RRM analyze error ${res.status}`);
+  return { job_id: (await res.json()).job_id, conflict: false };
+}
+
+/** ジョブの状態。破棄済み・TTL 切れ（404）は null を返す。 */
+export async function fetchRrmJob(jobId: string): Promise<RrmJob | null> {
+  const res = await fetch(`${API_BASE}/api/rrm/jobs/${jobId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error((await rrmDetail(res)) ?? `RRM job error ${res.status}`);
+  return maskedJson(res);
+}
+
+export async function fetchRrmResult(jobId: string): Promise<RrmResult> {
+  const res = await fetch(`${API_BASE}/api/rrm/jobs/${jobId}/result`);
+  if (!res.ok) throw new Error((await rrmDetail(res)) ?? `RRM result error ${res.status}`);
+  return maskedJson(res);
+}
+
+/** 保存済み結果の行。`fetchRrmResult` と同じ形が返る（表示は同じ実装を使う）。 */
+export async function fetchRrmSavedRows(name: string): Promise<RrmResult> {
+  const res = await fetch(`${API_BASE}/api/rrm/results/${encodeURIComponent(name)}/rows`);
+  if (!res.ok) throw new Error((await rrmDetail(res)) ?? `RRM saved rows error ${res.status}`);
+  return maskedJson(res);
+}
+
+/** 新しい順。 */
+export async function fetchRrmSavedResults(): Promise<RrmSavedResult[]> {
+  const res = await fetch(`${API_BASE}/api/rrm/results`);
+  if (!res.ok) throw new Error((await rrmDetail(res)) ?? `RRM results error ${res.status}`);
+  return maskResponse((await res.json()).results);
+}
+
+export async function deleteRrmSavedResult(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/rrm/results/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error((await rrmDetail(res)) ?? `RRM delete error ${res.status}`);
+}
+
+export function getRrmDownloadUrl(
+  source: { kind: "job"; jobId: string } | { kind: "saved"; name: string },
+  format: "xlsx" | "csv"
+): string {
+  const base =
+    source.kind === "job"
+      ? `${API_BASE}/api/rrm/jobs/${source.jobId}/download`
+      : `${API_BASE}/api/rrm/results/${encodeURIComponent(source.name)}/download`;
+  return `${base}?format=${format}`;
+}
+
+/** 分類 → 色。**色の定義はバックエンド（meta.class_colors）**を使う */
+export function rrmClassColor(classification: string, meta: RrmMeta): string {
+  const table = meta.class_colors ?? {};
+  return `#${table[classification] ?? "9E9E9E"}`;
+}

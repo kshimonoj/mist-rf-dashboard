@@ -15,6 +15,9 @@ services:
       # data/floorpeak_results のローテート。hangap とも data/logs とも独立している
       - FLOORPEAK_RESULTS_MAX_FILES=${FLOORPEAK_RESULTS_MAX_FILES:-50}
       - FLOORPEAK_RESULTS_MAX_TOTAL_MB=${FLOORPEAK_RESULTS_MAX_TOTAL_MB:-500}
+      # data/rrm_results のローテート。hangap / floorpeak とも data/logs とも独立している
+      - RRM_RESULTS_MAX_FILES=${RRM_RESULTS_MAX_FILES:-50}
+      - RRM_RESULTS_MAX_TOTAL_MB=${RRM_RESULTS_MAX_TOTAL_MB:-500}
       # data/logs のローテート。既定は dry-run（1件も削除せず、削除予定をログに出すだけ）。
       # ログを確認したうえで LOG_ROTATE_DRY_RUN=0 にして初めて実削除が始まる。
       - LOG_ROTATE_DRY_RUN=${LOG_ROTATE_DRY_RUN:-1}

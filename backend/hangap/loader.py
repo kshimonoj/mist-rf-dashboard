@@ -63,8 +63,11 @@ EXCEL_SUFFIXES: frozenset[str] = frozenset({".xlsx", ".xlsm"})
 #: ``hangap_results`` は hangap 自身の**出力**（保存済みの分析結果）を置く場所で、
 #: これを入力として拾うとヘッダー判定で弾かれ、既定（``on_unclassified='error'``）
 #: では分析が止まる。ディレクトリ名で無条件に除外する。
-#: ``floorpeak_results`` も同じ理由で外す（``floorpeak.archive.RESULTS_DIR_NAME``）。
-EXCLUDED_DIR_NAMES: frozenset[str] = frozenset({"hangap_results", "floorpeak_results"})
+#: ``floorpeak_results`` / ``rrm_results`` も同じ理由で外す
+#: （``floorpeak.archive.RESULTS_DIR_NAME`` / ``rrm.archive.RESULTS_DIR_NAME``）。
+EXCLUDED_DIR_NAMES: frozenset[str] = frozenset(
+    {"hangap_results", "floorpeak_results", "rrm_results"}
+)
 
 #: ファイル名に現れうるタイムゾーントークン（変換には使わない。混在の警告のみ）
 TZ_TOKENS: frozenset[str] = frozenset(
