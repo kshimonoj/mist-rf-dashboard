@@ -1094,8 +1094,11 @@ export const getPseudonymizedLogsUrl = (filenames: string[]) =>
   `${API_BASE}/api/pseudonymize/logs?files=${encodeURIComponent(filenames.join(","))}`;
 
 /** csv のみ。xlsx はタイトル・分析条件の自由記述が仮名化できないため対象外。 */
-export const getPseudonymizedResultUrl = (name: string) =>
-  `${API_BASE}/api/pseudonymize/results/${encodeURIComponent(name)}?format=csv`;
+export const getPseudonymizedResultUrl = (
+  name: string,
+  kind: "hangap" | "floorpeak" | "rrm" = "hangap"
+) =>
+  `${API_BASE}/api/pseudonymize/results/${encodeURIComponent(name)}?format=csv&kind=${kind}`;
 
 function filenameFromResponse(res: Response, fallback: string): string {
   // サーバはタイムシフト後の名前を付ける（ファイル名に実日付が残ると台無しになる）。

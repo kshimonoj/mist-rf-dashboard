@@ -148,6 +148,31 @@ COLUMN_RULES: dict[str, TransformType] = {
     "周辺AP判定": T.PASSTHROUGH,
     "周辺AP RF隣接数": T.PASSTHROUGH,
     "周辺AP実測なし数": T.PASSTHROUGH,
+    # --- Floor Peak 分析結果（floorpeak.analysis.RESULT_COLUMNS）---
+    "rank_in_floor": T.PASSTHROUGH,
+    # --- RRM 分析結果（rrm.analysis.RESULT_COLUMNS）---
+    # event_timestamp / site_name / ap_name / ap_mac / reason / band / pre_channel は
+    # 上の共通ルールと同じ列名なのでここでは追加しない。
+    "classification": T.PASSTHROUGH,
+    "post_channel": T.PASSTHROUGH,
+    "channel_changed": T.PASSTHROUGH,
+    "before_timestamp": T.TIMESTAMP,
+    "after_timestamp": T.TIMESTAMP,
+    "match_status": T.PASSTHROUGH,
+    "contaminated": T.PASSTHROUGH,
+    "clients_before": T.PASSTHROUGH,
+    "clients_after": T.PASSTHROUGH,
+    "clients_delta": T.PASSTHROUGH,
+    "util_24_before": T.PASSTHROUGH,
+    "util_24_after": T.PASSTHROUGH,
+    "util_24_delta": T.PASSTHROUGH,
+    "util_5_before": T.PASSTHROUGH,
+    "util_5_after": T.PASSTHROUGH,
+    "util_5_delta": T.PASSTHROUGH,
+    "util_6_before": T.PASSTHROUGH,
+    "util_6_after": T.PASSTHROUGH,
+    "util_6_delta": T.PASSTHROUGH,
+    "impact_clients": T.PASSTHROUGH,
 }
 
 # ap_metrics の radio_* 24 列（すべて PASSTHROUGH）
@@ -343,6 +368,38 @@ HANGAP_RESULT_TEXT_LITERALS: tuple[str, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Floor Peak 分析結果 CSV（data/floorpeak_results/*.csv）
+#
+# 列は ``floorpeak.analysis.RESULT_COLUMNS`` と同一・同順（写して持つ理由は
+# HANGAP_RESULT_COLUMNS と同じ）。ずれたら tests/pseudonymizer/test_floorpeak_result.py
+# が落ちる。xlsx は対象外（グラフ描画に AP名をカテゴリ軸として使うため別枠。D-04）。
+# ---------------------------------------------------------------------------
+
+FLOORPEAK_RESULT_COLUMNS: tuple[str, ...] = (
+    "ap_name", "mac", "model", "num_clients", "status",
+    "map_id", "map_name", "x_m", "y_m", "rank_in_floor",
+)
+
+# ---------------------------------------------------------------------------
+# RRM 分析結果 CSV（data/rrm_results/*.csv）
+#
+# 列は ``rrm.analysis.RESULT_COLUMNS`` と同一・同順。ずれたら
+# tests/pseudonymizer/test_rrm_result.py が落ちる。xlsx は対象外（D-04）。
+# ---------------------------------------------------------------------------
+
+RRM_RESULT_COLUMNS: tuple[str, ...] = (
+    "event_timestamp", "classification", "reason", "site_name", "ap_name", "ap_mac", "band",
+    "pre_channel", "post_channel", "channel_changed",
+    "before_timestamp", "after_timestamp", "match_status", "contaminated",
+    "clients_before", "clients_after", "clients_delta",
+    "util_24_before", "util_24_after", "util_24_delta",
+    "util_5_before", "util_5_after", "util_5_delta",
+    "util_6_before", "util_6_after", "util_6_delta",
+    "impact_clients",
+)
+
+
 FILE_TYPES: tuple[FileType, ...] = (
     FileType(
         key="ap_metrics",
@@ -389,6 +446,16 @@ FILE_TYPES: tuple[FileType, ...] = (
         key="hangap_result",
         columns=HANGAP_RESULT_COLUMNS,
     ),
+    FileType(
+        key="floorpeak_result",
+        columns=FLOORPEAK_RESULT_COLUMNS,
+        # mac は種別で意味が変わる列（AMBIGUOUS_COLUMNS）。floorpeak では AP の MAC
+        overrides={"mac": T.AP_MAC},
+    ),
+    FileType(
+        key="rrm_result",
+        columns=RRM_RESULT_COLUMNS,
+    ),
 )
 
 FILE_TYPES_BY_KEY: dict[str, FileType] = {ft.key: ft for ft in FILE_TYPES}
@@ -404,6 +471,8 @@ EXPECTED_COLUMN_COUNTS: dict[str, int] = {
     "floormap_ap_detail": 24,
     "rf_neighbors": 9,
     "hangap_result": 30,
+    "floorpeak_result": 10,
+    "rrm_result": 27,
 }
 
 

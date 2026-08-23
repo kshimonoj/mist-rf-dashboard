@@ -2,23 +2,25 @@
 
 import {
   AlertTriangle, Archive, ChevronDown, Clock, Download, Eye, Play, RadioTower,
-  RefreshCw, Trash2, X,
+  RefreshCw, ShieldCheck, Trash2, X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
-  deleteRrmSavedResult, fetchRrmJob, fetchRrmLogSites, fetchRrmResult,
-  fetchRrmSavedResults, fetchRrmSavedRows, fetchSiteAps, getRrmDownloadUrl,
-  startRrmAnalysis,
-  HangapLogSite, HangapLogSites, RrmAnalyzeBody, RrmJob, RrmMeta, RrmPhase,
-  RrmResult, RrmRow, RrmSavedResult, rrmClassColor,
+  deleteRrmSavedResult, downloadPseudonymized, fetchRrmJob, fetchRrmLogSites,
+  fetchRrmResult, fetchRrmSavedResults, fetchRrmSavedRows, fetchSiteAps,
+  getPseudonymizedResultUrl, getRrmDownloadUrl, startRrmAnalysis,
+  HangapLogSite, HangapLogSites, PSEUDONYMIZE_NOTICE, RrmAnalyzeBody, RrmJob,
+  RrmMeta, RrmPhase, RrmResult, RrmRow, RrmSavedResult, rrmClassColor,
 } from "@/lib/api";
+import DataTable, { DataTableColumn } from "@/app/components/DataTable";
 import DownloadLink from "@/app/components/DownloadLink";
 import MaskToggle from "@/app/components/MaskToggle";
 import RrmCharts from "@/app/components/RrmCharts";
 import TabNav from "@/app/components/TabNav";
 import ThemeToggle from "@/app/components/ThemeToggle";
-import { prefetchForMask } from "@/lib/mask";
+import { ColumnKind } from "@/lib/tableSort";
+import { DOWNLOAD_DISABLED_TITLE, prefetchForMask } from "@/lib/mask";
 import { toLocalString } from "@/lib/time";
 import { useMask, useTimezone } from "@/app/providers";
 
@@ -101,6 +103,8 @@ function SiteSelect({
   onRefresh: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const list = sites ?? [];
   const summary =
     value.length === 0
@@ -116,9 +120,31 @@ function SiteSelect({
     );
   };
 
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       <button
+        ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-2 mt-1 px-2 py-1.5 rounded border text-sm w-72 text-left"
         style={{
@@ -132,8 +158,6 @@ function SiteSelect({
       </button>
 
       {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div
             className="absolute z-50 mt-1 w-96 max-h-80 overflow-y-auto p-2 border rounded-lg shadow-lg"
             style={cardStyle}
@@ -196,7 +220,6 @@ function SiteSelect({
               );
             })}
           </div>
-        </>
       )}
     </div>
   );
@@ -413,6 +436,46 @@ function SummaryTables({ meta }: { meta: RrmMeta }) {
 const HIGHLIGHT_CONTAMINATED = "rgba(255,215,0,0.10)";
 const HIGHLIGHT_UNMATCHED = "rgba(255,68,68,0.08)";
 
+/** 27 列それぞれの型。DataTable のソート・フィルタに使う（列自体は API の columns をそのまま使う） */
+const RRM_COLUMN_KIND: Record<string, ColumnKind> = {
+  event_timestamp: "time",
+  classification: "enum",
+  reason: "text",
+  site_name: "text",
+  ap_name: "text",
+  ap_mac: "text",
+  band: "enum",
+  pre_channel: "number",
+  post_channel: "number",
+  channel_changed: "bool",
+  before_timestamp: "time",
+  after_timestamp: "time",
+  match_status: "enum",
+  contaminated: "bool",
+  clients_before: "number",
+  clients_after: "number",
+  clients_delta: "number",
+  util_24_before: "number",
+  util_24_after: "number",
+  util_24_delta: "number",
+  util_5_before: "number",
+  util_5_after: "number",
+  util_5_delta: "number",
+  util_6_before: "number",
+  util_6_after: "number",
+  util_6_delta: "number",
+  impact_clients: "number",
+};
+
+/** match_status の意味（rrm/metrics.py の判定基準と一致させること） */
+const MATCH_STATUS_EXPLANATIONS: [string, string][] = [
+  ["ok", "前後とも直近サンプルが見つかり、推定間隔の範囲内だった（差分を信頼してよい）"],
+  ["no_before", "変更前の直近サンプルが見つからなかった（そのAPの記録が変更時刻より後にしかない）"],
+  ["no_after", "変更後の直近サンプルが見つからなかった（そのAPの記録が変更時刻より前にしかない）"],
+  ["too_far", "前後どちらかのサンプルは見つかったが、推定間隔の3倍以上離れていた（間が空きすぎて直近とは言えない）"],
+  ["no_ap", "そのAPのサンプルが ap_metrics に1件も無い（前後どころかAP自体の記録が無い）"],
+];
+
 function renderCell(column: string, row: RrmRow, meta: RrmMeta) {
   const value = (row as unknown as Record<string, unknown>)[column];
   if (column === "classification") {
@@ -440,9 +503,63 @@ function renderCell(column: string, row: RrmRow, meta: RrmMeta) {
 }
 
 /**
+ * 「汚染」「照合不可（match_status）」の意味の説明。常時表示ではなく折りたたみ
+ * （details/summary）にする。読んだ人が「なぜこの行に印がついているか」
+ * 「なぜあの行にはついていないか」を判断できることを基準にした文言。
+ */
+function ContaminationExplanation() {
+  return (
+    <details className="text-xs mb-3 border rounded-lg" style={cardStyle}>
+      <summary
+        className="px-3 py-2 cursor-pointer select-none"
+        style={{ color: "var(--cyan)" }}
+      >
+        「汚染」「照合不可（match_status）」の判定基準を見る
+      </summary>
+      <div className="px-3 pb-3 pt-1 space-y-3" style={{ color: "var(--text-secondary)" }}>
+        <div>
+          <p className="font-semibold mb-1" style={{ color: "var(--text-primary)" }}>汚染（contaminated）とは</p>
+          <p>
+            チャネル変更の前後で取得した接続端末数・利用率は、直前サンプルと直後サンプルの
+            2点だけを比較しています。この区間内に同じAPで別のチャネル変更（同一バンド）が
+            起きていた場合、比較結果にその影響が混ざっている可能性があるため「汚染」と印を付けます。
+          </p>
+          <p className="mt-1">
+            <span style={{ color: "var(--text-muted)" }}>汚染に含めないもの: </span>
+            同じ瞬間（{RADAR_MATCH_HINT}秒以内）に複数バンド（2.4/5/6GHz）で同時に変更が起きた場合は、
+            1回のRRM動作とみなし汚染にしません。前後どちらかのサンプルが無い行（match_status が ok
+            以外）は区間そのものが確定できないため、汚染の判定自体を行いません。
+          </p>
+        </div>
+        <div>
+          <p className="font-semibold mb-1" style={{ color: "var(--text-primary)" }}>match_status（照合不可の理由）</p>
+          <table className="text-xs">
+            <tbody>
+              {MATCH_STATUS_EXPLANATIONS.map(([status, text]) => (
+                <tr key={status}>
+                  <td className="pr-3 py-0.5 font-mono align-top whitespace-nowrap" style={{ color: "var(--cyan)" }}>
+                    {status}
+                  </td>
+                  <td className="py-0.5">{text}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+/** 汚染判定で「同一 RRM アクショングループ」とみなす時間窓（秒）。backend/rrm/metrics.py の CONTAMINATION_GROUP_SECONDS と同じ */
+const RADAR_MATCH_HINT = 5;
+
+/**
  * 明細テーブル。列は **API が返した columns をそのまま** 使う
  * （フロントで列を選び直すと csv / xlsx と食い違う）。
  * 汚染・照合不可の行は背景色と印で一目で分かるようにする。
+ * 列ヘッダーのソート・列ごとのフィルタ（DataTable）は表示専用で、
+ * ダウンロード（xlsx / csv）の内容には影響しない。
  */
 function DetailTable({ result }: { result: RrmResult }) {
   const meta = result.meta;
@@ -456,7 +573,18 @@ function DetailTable({ result }: { result: RrmResult }) {
         : result.rows,
     [result.rows, onlySuspect]
   );
-  const shown = rows.slice(0, MAX_TABLE_ROWS);
+
+  const tableColumns: DataTableColumn<RrmRow>[] = useMemo(
+    () =>
+      columns.map((c) => ({
+        key: c,
+        label: c,
+        kind: RRM_COLUMN_KIND[c] ?? "text",
+        getValue: (row: RrmRow) => (row as unknown as Record<string, unknown>)[c],
+        render: (row: RrmRow) => renderCell(c, row, meta),
+      })),
+    [columns, meta]
+  );
 
   return (
     <section className="border rounded-lg p-4" style={cardStyle}>
@@ -484,59 +612,19 @@ function DetailTable({ result }: { result: RrmResult }) {
         </span>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b text-left" style={{ borderColor: "var(--chart-grid)" }}>
-              {columns.map((c) => (
-                <th key={c} className="py-2 px-2 font-normal whitespace-nowrap font-mono"
-                    style={{ color: "var(--text-muted)" }}>
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((row, i) => {
-              const unmatched = row.match_status !== "ok";
-              return (
-                <tr
-                  key={`${row.event_timestamp}/${row.ap_mac}/${row.band}/${i}`}
-                  className="border-b"
-                  style={{
-                    borderColor: "var(--chart-grid)",
-                    backgroundColor: unmatched
-                      ? HIGHLIGHT_UNMATCHED
-                      : row.contaminated ? HIGHLIGHT_CONTAMINATED : undefined,
-                  }}
-                >
-                  {columns.map((c) => (
-                    <td key={c} className="py-1.5 px-2 whitespace-nowrap font-mono"
-                        style={{ color: "var(--text-primary)" }}>
-                      {renderCell(c, row, meta)}
-                    </td>
-                  ))}
-                </tr>
-              );
-            })}
-            {shown.length === 0 && (
-              <tr>
-                <td colSpan={columns.length} className="py-8 text-center"
-                    style={{ color: "var(--text-muted)" }}>
-                  表示する行がありません
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <ContaminationExplanation />
 
-      {rows.length > shown.length && (
-        <p className="text-xs mt-2" style={{ color: "var(--yellow)" }}>
-          {rows.length} 件のうち先頭 {shown.length} 件だけを表示しています。
-          全件は csv / xlsx をダウンロードしてください。
-        </p>
-      )}
+      <DataTable
+        columns={tableColumns}
+        rows={rows}
+        rowKey={(row, i) => `${row.event_timestamp}/${row.ap_mac}/${row.band}/${i}`}
+        rowStyle={(row) =>
+          row.match_status !== "ok"
+            ? { backgroundColor: HIGHLIGHT_UNMATCHED }
+            : row.contaminated ? { backgroundColor: HIGHLIGHT_CONTAMINATED } : undefined
+        }
+        maxRows={MAX_TABLE_ROWS}
+      />
     </section>
   );
 }
@@ -663,8 +751,10 @@ function SavedResults({
   onView: (row: RrmSavedResult | null) => void;
 }) {
   const { timezone } = useTimezone();
+  const { masked } = useMask();
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pseudonymizing, setPseudonymizing] = useState<string | null>(null);
 
   const { data, isLoading, mutate } = useSWR<RrmSavedResult[]>(
     "rrm-saved-results",
@@ -674,6 +764,20 @@ function SavedResults({
   useEffect(() => {
     if (doneJobId) mutate();
   }, [doneJobId, mutate]);
+
+  // 仮名化ダウンロードは csv のみ。xlsx は自由記述にサイト名・時刻が入るため対象外
+  // （hangap/page.tsx の同名ハンドラと同じ設計。新しい設計をしない）。
+  const handlePseudonymize = async (row: RrmSavedResult) => {
+    setPseudonymizing(row.name);
+    setError(null);
+    try {
+      await downloadPseudonymized(getPseudonymizedResultUrl(row.name, "rrm"), `${row.name}.csv`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPseudonymizing(null);
+    }
+  };
 
   const handleDelete = async (row: RrmSavedResult) => {
     const when = row.saved_at ? toLocalString(row.saved_at, timezone) : row.name;
@@ -714,6 +818,12 @@ function SavedResults({
           再取得
         </button>
       </div>
+
+      {/* 仮名化 ≠ 匿名化。落とす人がREADMEを読むとは限らないので導線の隣に置く */}
+      <p className="text-xs mb-3 leading-relaxed" style={{ color: "var(--text-muted)" }}>
+        「仮名化 csv」は AP名・サイト名・時刻を置き換えた csv をその場で作って返します
+        （xlsx はタイトル・分析条件の自由記述が仮名化できないため対象外です）。{PSEUDONYMIZE_NOTICE}
+      </p>
 
       {error && (
         <p className="text-sm mb-3 whitespace-pre-wrap" style={{ color: "var(--red)" }}>{error}</p>
@@ -801,6 +911,17 @@ function SavedResults({
                           {format}
                         </DownloadLink>
                       ))}
+                      {/* 通常のダウンロードとは別の導線。csv だけに出す */}
+                      <button
+                        onClick={() => handlePseudonymize(row)}
+                        disabled={masked || pseudonymizing === row.name || row.files.csv === undefined}
+                        title={masked ? DOWNLOAD_DISABLED_TITLE : PSEUDONYMIZE_NOTICE}
+                        className="flex items-center gap-1 px-2 py-1 border rounded text-xs disabled:opacity-40"
+                        style={{ borderColor: "var(--green)", color: "var(--green)" }}
+                      >
+                        <ShieldCheck className={`w-3.5 h-3.5 ${pseudonymizing === row.name ? "animate-pulse" : ""}`} />
+                        {pseudonymizing === row.name ? "仮名化中..." : "仮名化 csv"}
+                      </button>
                       <button
                         onClick={() => handleDelete(row)}
                         disabled={deleting === row.name}

@@ -2,25 +2,28 @@
 
 import {
   AlertTriangle, Archive, BarChart3, ChevronDown, Clock, Download, Eye,
-  Play, RefreshCw, Trash2, X,
+  Play, RefreshCw, ShieldCheck, Trash2, X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
-  deleteFloorPeakSavedResult, fetchFloorPeakJob, fetchFloorPeakLogSites,
-  fetchFloorPeakResult, fetchFloorPeakSavedResults, fetchFloorPeakSavedRows,
-  getFloorPeakDownloadUrl, startFloorPeakAnalysis, fetchSiteAps,
+  deleteFloorPeakSavedResult, downloadPseudonymized, fetchFloorPeakJob,
+  fetchFloorPeakLogSites, fetchFloorPeakResult, fetchFloorPeakSavedResults,
+  fetchFloorPeakSavedRows, fetchSiteAps, getFloorPeakDownloadUrl,
+  getPseudonymizedResultUrl, startFloorPeakAnalysis,
   FloorPeakAnalyzeBody, FloorPeakJob, FloorPeakMeta, FloorPeakPhase, FloorPeakResult,
-  FloorPeakRow, FloorPeakSavedResult, HangapLogSite, HangapLogSites,
+  FloorPeakRow, FloorPeakSavedResult, HangapLogSite, HangapLogSites, PSEUDONYMIZE_NOTICE,
 } from "@/lib/api";
+import DataTable, { DataTableColumn } from "@/app/components/DataTable";
 import FloorPeakChart from "@/app/components/FloorPeakChart";
 import TabNav from "@/app/components/TabNav";
 import MaskToggle from "@/app/components/MaskToggle";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import DownloadLink from "@/app/components/DownloadLink";
+import { ColumnKind } from "@/lib/tableSort";
 import { toLocalString } from "@/lib/time";
 import { useTimezone, useMask } from "@/app/providers";
-import { prefetchForMask } from "@/lib/mask";
+import { DOWNLOAD_DISABLED_TITLE, prefetchForMask } from "@/lib/mask";
 
 const PHASE_LABELS: Record<FloorPeakPhase, string> = {
   loading: "読み込み中",
@@ -104,15 +107,39 @@ function SiteSelect({
   onRefresh: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const list = sites ?? [];
   const selected = list.find((s) => s.site_id === value);
   const summary = value === null
     ? "選択してください"
     : selected ? siteLabel(selected) : value;
 
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       <button
+        ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-2 mt-1 px-2 py-1.5 rounded border text-sm w-72 text-left"
         style={{
@@ -126,8 +153,6 @@ function SiteSelect({
       </button>
 
       {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div
             className="absolute z-50 mt-1 w-96 max-h-80 overflow-y-auto p-2 border rounded-lg shadow-lg"
             style={cardStyle}
@@ -175,7 +200,6 @@ function SiteSelect({
               );
             })}
           </div>
-        </>
       )}
     </div>
   );
@@ -254,6 +278,51 @@ function ConditionPanel({ meta }: { meta: FloorPeakMeta }) {
         ))}
       </dl>
     </div>
+  );
+}
+
+/** 10 列それぞれの型。DataTable のソート・フィルタに使う（列自体は API の columns をそのまま使う） */
+const FLOORPEAK_COLUMN_KIND: Record<string, ColumnKind> = {
+  ap_name: "text",
+  mac: "text",
+  model: "enum",
+  num_clients: "number",
+  status: "enum",
+  map_id: "text",
+  map_name: "enum",
+  x_m: "number",
+  y_m: "number",
+  rank_in_floor: "number",
+};
+
+/**
+ * 結果テーブル（選択中フロア・トップ N の範囲）。グラフと同じ `shown` を使う
+ * （フロア選択・トップ N の切り出しは ResultView 側で行う）。
+ * ソート・フィルタは表示専用で、ダウンロード（xlsx / csv）の内容には影響しない。
+ */
+function FloorPeakResultTable({ rows, columns }: { rows: FloorPeakRow[]; columns: string[] }) {
+  const tableColumns: DataTableColumn<FloorPeakRow>[] = useMemo(
+    () =>
+      columns.map((c) => ({
+        key: c,
+        label: c,
+        kind: FLOORPEAK_COLUMN_KIND[c] ?? "text",
+        getValue: (row: FloorPeakRow) => (row as unknown as Record<string, unknown>)[c],
+      })),
+    [columns]
+  );
+
+  return (
+    <section className="border rounded-lg p-4" style={cardStyle}>
+      <p className="text-xs mb-3" style={{ color: "var(--cyan)" }}>
+        明細（表示中のフロア・トップ {rows.length} 台）
+      </p>
+      <DataTable
+        columns={tableColumns}
+        rows={rows}
+        rowKey={(row, i) => `${row.mac}/${i}`}
+      />
+    </section>
   );
 }
 
@@ -343,6 +412,8 @@ function ResultView({
           <FloorPeakChart rows={shown} meta={meta} />
         </div>
       </div>
+
+      <FloorPeakResultTable rows={shown} columns={result.columns} />
     </>
   );
 }
@@ -407,8 +478,10 @@ function SavedResults({
   onView: (row: FloorPeakSavedResult | null) => void;
 }) {
   const { timezone } = useTimezone();
+  const { masked } = useMask();
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pseudonymizing, setPseudonymizing] = useState<string | null>(null);
 
   const { data, isLoading, mutate } = useSWR<FloorPeakSavedResult[]>(
     "floorpeak-saved-results",
@@ -418,6 +491,20 @@ function SavedResults({
   useEffect(() => {
     if (doneJobId) mutate();
   }, [doneJobId, mutate]);
+
+  // 仮名化ダウンロードは csv のみ。xlsx は自由記述にサイト名・時刻が入るため対象外
+  // （hangap/page.tsx の同名ハンドラと同じ設計。新しい設計をしない）。
+  const handlePseudonymize = async (row: FloorPeakSavedResult) => {
+    setPseudonymizing(row.name);
+    setError(null);
+    try {
+      await downloadPseudonymized(getPseudonymizedResultUrl(row.name, "floorpeak"), `${row.name}.csv`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPseudonymizing(null);
+    }
+  };
 
   const handleDelete = async (row: FloorPeakSavedResult) => {
     const when = row.saved_at ? toLocalString(row.saved_at, timezone) : row.name;
@@ -458,6 +545,12 @@ function SavedResults({
           再取得
         </button>
       </div>
+
+      {/* 仮名化 ≠ 匿名化。落とす人がREADMEを読むとは限らないので導線の隣に置く */}
+      <p className="text-xs mb-3 leading-relaxed" style={{ color: "var(--text-muted)" }}>
+        「仮名化 csv」は AP名・サイト名・時刻を置き換えた csv をその場で作って返します
+        （xlsx はタイトル・分析条件の自由記述が仮名化できないため対象外です）。{PSEUDONYMIZE_NOTICE}
+      </p>
 
       {error && (
         <p className="text-sm mb-3 whitespace-pre-wrap" style={{ color: "var(--red)" }}>{error}</p>
@@ -547,6 +640,17 @@ function SavedResults({
                           {format}
                         </DownloadLink>
                       ))}
+                      {/* 通常のダウンロードとは別の導線。csv だけに出す */}
+                      <button
+                        onClick={() => handlePseudonymize(row)}
+                        disabled={masked || pseudonymizing === row.name || row.files.csv === undefined}
+                        title={masked ? DOWNLOAD_DISABLED_TITLE : PSEUDONYMIZE_NOTICE}
+                        className="flex items-center gap-1 px-2 py-1 border rounded text-xs disabled:opacity-40"
+                        style={{ borderColor: "var(--green)", color: "var(--green)" }}
+                      >
+                        <ShieldCheck className={`w-3.5 h-3.5 ${pseudonymizing === row.name ? "animate-pulse" : ""}`} />
+                        {pseudonymizing === row.name ? "仮名化中..." : "仮名化 csv"}
+                      </button>
                       <button
                         onClick={() => handleDelete(row)}
                         disabled={deleting === row.name}

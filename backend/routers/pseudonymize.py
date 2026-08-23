@@ -31,11 +31,22 @@ from pseudonymizer.leakcheck import LeakCheckFailed
 from pseudonymizer.restore import MissingMaterialError, RestoreError, UnsupportedFormatError
 from pseudonymizer.salt import SaltError
 from pseudonymizer.transforms import PseudonymizeError
+from routers import floorpeak as floorpeak_router
 from routers import hangap as hangap_router
 from routers import logs as logs_router
+from routers import rrm as rrm_router
 
 router = APIRouter(prefix="/api/pseudonymize", tags=["pseudonymize"])
 logger = logging.getLogger(__name__)
+
+#: 保存済み分析結果の仮名化ダウンロードが対応する種別。
+#: name の検証（`_result_name`）と保存先（`RESULTS_DIR`）はそれぞれの router のものを使う
+#: （3種別とも同じ形の関数・定数を持つので、ここでは選ぶだけで新しい設計はしない）。
+_RESULT_KIND_ROUTERS = {
+    "hangap": hangap_router,
+    "floorpeak": floorpeak_router,
+    "rrm": rrm_router,
+}
 
 ZIP_NAME = "pseudonymized_logs.zip"
 RESTORE_ZIP_NAME = "restored_files.zip"
@@ -157,6 +168,7 @@ def download_pseudonymized_logs(
 def download_pseudonymized_result(
     name: str,
     format: str = Query("csv", description="csv のみ（xlsx は対象外）"),
+    kind: str = Query("hangap", description="hangap / floorpeak / rrm"),
 ):
     """保存済みの分析結果（csv）を仮名化して返す。
 
@@ -171,8 +183,14 @@ def download_pseudonymized_result(
                 "xlsx はタイトル・分析条件の自由記述にサイト名や時刻が入るため対象外です。"
             ),
         )
-    name = hangap_router._result_name(name)
-    path = archive.member_path(hangap_router.RESULTS_DIR, name, ".csv")
+    result_router = _RESULT_KIND_ROUTERS.get(kind)
+    if result_router is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不明な種別です: {kind!r}（hangap / floorpeak / rrm のいずれか）",
+        )
+    name = result_router._result_name(name)
+    path = archive.member_path(result_router.RESULTS_DIR, name, ".csv")
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"保存済みの結果が見つかりません: {name}.csv")
 
