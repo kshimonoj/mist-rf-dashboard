@@ -156,7 +156,7 @@ def test_download_returns_readable_pptx(api_client, tmp_path):
     path = tmp_path / result["filename"]
     path.write_bytes(res.content)
     prs = Presentation(str(path))
-    assert len(prs.slides) == result["slide_count"] == 1 + 2 + 3
+    assert len(prs.slides) == result["slide_count"] == 1 + 3 + 3
 
 
 def test_result_before_done_is_409(api_client):

@@ -58,6 +58,8 @@ def hangap_rows(count: int = 3) -> list[dict[str, Any]]:
             "回復状況": "回復",
             "周辺AP判定": "周辺に端末あり",
             "退場疑い": "False",
+            "直前clients": i,
+            "AP最大clients": 20 + i,
         }
         for i in range(1, count + 1)
     ]

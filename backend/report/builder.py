@@ -318,6 +318,12 @@ HANGAP_DETAIL_COLUMNS: tuple[str, ...] = (
 #: 上位 N 件を決める列。**降順に並べ替えるだけ**で、新しい値は作らない
 HANGAP_SORT_COLUMN = "連続ゼロ回数"
 
+HANGAP_PREV_CLIENTS_DETAIL_COLUMNS: tuple[str, ...] = (
+    "ap_name", "site_name", "直前clients", "AP最大clients", "連続ゼロ回数", "回復状況", "周辺AP判定",
+)
+#: 上位 N 件を決める列（直前clients の多い順スライド用）
+HANGAP_PREV_CLIENTS_SORT_COLUMN = "直前clients"
+
 
 def build_hangap(prs: Presentation, source: Any) -> list[tuple[str, str]]:
     """Hang AP の章（サマリ + 明細の要約）。``(kind, title)`` の並びを返す。"""
@@ -379,15 +385,49 @@ def build_hangap(prs: Presentation, source: Any) -> list[tuple[str, str]]:
         "全件は Hang AP の保存済み結果（xlsx / csv）を参照してください",
     )
     built.append(("table", title))
+
+    slide = add_slide(prs)
+    title = f"Hang AP — 明細の要約（{HANGAP_PREV_CLIENTS_SORT_COLUMN}の多い順 上位 {DETAIL_ROWS} 件）"
+    add_heading(slide, label, title)
+    top_rows = _top_rows(rows, HANGAP_PREV_CLIENTS_SORT_COLUMN, DETAIL_ROWS, tiebreak="ap_name")
+    if top_rows.empty:
+        add_lines(slide, ["（検知された区間はありません）"])
+    else:
+        add_table(
+            slide,
+            list(HANGAP_PREV_CLIENTS_DETAIL_COLUMNS),
+            [
+                [row[column] for column in HANGAP_PREV_CLIENTS_DETAIL_COLUMNS]
+                for _, row in top_rows.iterrows()
+            ],
+            height=Inches(0.32) * (len(top_rows) + 1),
+            col_ratios=(2.4, 2.4, 1.3, 1.3, 1.3, 1.6, 2.0),
+            size=Pt(10),
+        )
+    add_note(
+        slide,
+        f"全 {len(rows)} 件のうち上位 {min(DETAIL_ROWS, len(rows))} 件のみ。"
+        "全件は Hang AP の保存済み結果（xlsx / csv）を参照してください",
+    )
+    built.append(("table", title))
     return built
 
 
-def _top_rows(rows: pd.DataFrame, column: str, limit: int) -> pd.DataFrame:
-    """``column`` の降順で上位 ``limit`` 件。列が無ければ先頭から取る。"""
+def _top_rows(
+    rows: pd.DataFrame, column: str, limit: int, *, tiebreak: str | None = None,
+) -> pd.DataFrame:
+    """``column`` の降順で上位 ``limit`` 件。列が無ければ先頭から取る。
+
+    ``tiebreak`` を指定すると、``column`` が同値の行は ``tiebreak`` 列の昇順で並べる。
+    """
     if rows.empty:
         return rows
     if column not in rows.columns:
         return rows.head(limit)
+    if tiebreak and tiebreak in rows.columns:
+        return rows.sort_values(
+            [column, tiebreak], ascending=[False, True], na_position="last",
+        ).head(limit)
     return rows.sort_values(column, ascending=False, na_position="last").head(limit)
 
 

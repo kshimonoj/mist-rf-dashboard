@@ -170,8 +170,8 @@ def test_written_pptx_slide_count(dirs, tmp_path):
     assert out.is_file()
 
     prs = Presentation(str(out))
-    # 表紙 1 + Hang AP 2 + Floor Peak（サマリ + フロア 2 枚）+ RRM 3
-    assert len(prs.slides) == 1 + 2 + (1 + 2) + 3
+    # 表紙 1 + Hang AP 3 + Floor Peak（サマリ + フロア 2 枚）+ RRM 3
+    assert len(prs.slides) == 1 + 3 + (1 + 2) + 3
     assert len(prs.slides) == result.slide_count
 
 
@@ -284,6 +284,78 @@ def test_hangap_detail_is_top_n_by_zero_count(tmp_path):
     assert values[0] == int(rows[builder.HANGAP_SORT_COLUMN].max())
 
 
+# ---------------------------------------------------------------------------
+# 明細の要約（直前clients の多い順。連続ゼロ回数トップ15 の直後に追加した2枚目）
+# ---------------------------------------------------------------------------
+
+
+def test_hangap_prev_clients_slide_is_added_after_zero_count_slide(dirs):
+    """連続ゼロ回数トップ15 の直後に「直前clients」スライドが 1 枚増える。"""
+    result = _build(dirs, hangap_result=S.HANGAP_NAME)
+    hangap_slides = [s for s in result.slides if s.section == "hangap"]
+    assert len(hangap_slides) == 3  # サマリ + 連続ゼロ回数トップ15 + 直前clientsトップ15
+    assert builder.HANGAP_SORT_COLUMN in hangap_slides[1].title
+    assert builder.HANGAP_PREV_CLIENTS_SORT_COLUMN in hangap_slides[2].title
+
+
+def test_hangap_prev_clients_is_top_n_sorted_desc_with_name_tiebreak(tmp_path):
+    """直前clients の降順。同値は AP 名の昇順(タイブレーク基準が既存に無いため)。"""
+    dirs = analysis.ResultsDirs.under(tmp_path)
+    rows = [
+        {**row, "直前clients": 5} for row in S.hangap_rows(builder.DETAIL_ROWS + 5)
+    ]
+    # 先頭 3 件を同値にして、タイブレークが AP 名の昇順になることを確認する
+    for i in range(3):
+        rows[i]["直前clients"] = 99
+    S.write_hangap(dirs.hangap, rows=rows)
+    result = _build(dirs, hangap_result=S.HANGAP_NAME)
+    all_rows = result.sources[0].rows
+
+    top = builder._top_rows(
+        all_rows, builder.HANGAP_PREV_CLIENTS_SORT_COLUMN, builder.DETAIL_ROWS,
+        tiebreak="ap_name",
+    )
+    assert len(top) == builder.DETAIL_ROWS
+    values = [int(v) for v in top[builder.HANGAP_PREV_CLIENTS_SORT_COLUMN]]
+    assert values == sorted(values, reverse=True)
+
+    tied = top[top[builder.HANGAP_PREV_CLIENTS_SORT_COLUMN] == 99]
+    assert len(tied) == 3
+    names = list(tied["ap_name"])
+    assert names == sorted(names)
+
+
+def test_hangap_prev_clients_slide_shows_fewer_than_15_when_available(tmp_path):
+    dirs = analysis.ResultsDirs.under(tmp_path)
+    S.write_hangap(dirs.hangap, rows=S.hangap_rows(4))
+    result = _build(dirs, hangap_result=S.HANGAP_NAME)
+    rows = result.sources[0].rows
+
+    top = builder._top_rows(
+        rows, builder.HANGAP_PREV_CLIENTS_SORT_COLUMN, builder.DETAIL_ROWS,
+        tiebreak="ap_name",
+    )
+    assert len(top) == 4
+
+
+def test_hangap_zero_count_slide_is_unchanged_by_new_slide(tmp_path):
+    """新スライド追加が既存の「連続ゼロ回数トップ15」の内容・順序に影響しないこと。"""
+    dirs = analysis.ResultsDirs.under(tmp_path)
+    S.write_hangap(dirs.hangap, rows=S.hangap_rows(builder.DETAIL_ROWS + 5))
+    result = _build(dirs, hangap_result=S.HANGAP_NAME)
+    rows = result.sources[0].rows
+
+    top = builder._top_rows(rows, builder.HANGAP_SORT_COLUMN, builder.DETAIL_ROWS)
+    assert len(top) == builder.DETAIL_ROWS
+    values = [int(v) for v in top[builder.HANGAP_SORT_COLUMN]]
+    assert values == sorted(values, reverse=True)
+    assert values[0] == int(rows[builder.HANGAP_SORT_COLUMN].max())
+
+    hangap_slides = [s for s in result.slides if s.section == "hangap"]
+    assert builder.HANGAP_SORT_COLUMN in hangap_slides[1].title
+    assert hangap_slides[1].kind == "table"
+
+
 def test_cover_is_always_present(dirs):
     result = _build(dirs, rrm_result=S.RRM_NAME)
     assert result.slides[0].section == "cover"
@@ -297,3 +369,33 @@ def test_slide_titles_carry_section_labels(dirs):
     )
     for slide in result.slides[1:]:
         assert slide.title.startswith(analysis.SECTION_LABELS[slide.section])
+
+
+def test_hangap_pptx_tables_content(tmp_path):
+    """PPTX 実体を読み戻し、既存の連続ゼロ回数トップ15スライドが変わらず、
+    直前clientsトップ15スライドに両方の列（直前clients / AP最大clients）が
+    降順で入っていることを確認する。"""
+    dirs = analysis.ResultsDirs.under(tmp_path)
+    S.write_hangap(dirs.hangap, rows=S.hangap_rows(5))
+    result = _build(dirs, hangap_result=S.HANGAP_NAME)
+    out = analysis.write_pptx(tmp_path / "hangap.pptx", result)
+    prs = Presentation(str(out))
+
+    # スライド構成: 0=表紙, 1=サマリ, 2=連続ゼロ回数トップ15, 3=直前clientsトップ15
+    zero_count_slide, prev_clients_slide = prs.slides[2], prs.slides[3]
+
+    zero_count_table = next(s.table for s in zero_count_slide.shapes if s.has_table)
+    zero_count_header = [zero_count_table.cell(0, c).text for c in range(len(zero_count_table.columns))]
+    assert zero_count_header == list(builder.HANGAP_DETAIL_COLUMNS)
+
+    prev_clients_table = next(s.table for s in prev_clients_slide.shapes if s.has_table)
+    header = [prev_clients_table.cell(0, c).text for c in range(len(prev_clients_table.columns))]
+    assert header == list(builder.HANGAP_PREV_CLIENTS_DETAIL_COLUMNS)
+    assert "直前clients" in header
+    assert "AP最大clients" in header
+
+    prev_idx = header.index("直前clients")
+    values = [
+        int(prev_clients_table.cell(r, prev_idx).text) for r in range(1, len(prev_clients_table.rows))
+    ]
+    assert values == sorted(values, reverse=True)
