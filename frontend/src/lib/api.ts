@@ -1786,3 +1786,120 @@ export function rrmClassColor(classification: string, meta: RrmMeta): string {
   const table = meta.class_colors ?? {};
   return `#${table[classification] ?? "9E9E9E"}`;
 }
+
+// ── 横断レポート（/api/report） ───────────────────────────────────────────────
+// Hang AP / Floor Peak / RRM の **保存済み分析結果** を選んで 1 つの PPTX にまとめる。
+// 選択肢は各モジュールの保存済み結果一覧（fetchHangapSavedResults など）をそのまま
+// 使う。**レポート専用の一覧 API は作らない**（同じものが 2 つあると必ずずれる）。
+//
+// 生成物はサーバに保存されない。ジョブの一時ファイルとして持ち、ダウンロード後は
+// TTL で消える。「保存済みレポート一覧」は持たない設計。
+
+export type ReportStatus = "running" | "done" | "failed";
+export type ReportPhase = "loading" | "building" | "writing";
+
+/** 章。**この順が出力順**（選んだ順序では変わらない） */
+export type ReportSection = "hangap" | "floorpeak" | "rrm";
+
+export const REPORT_SECTION_ORDER: ReportSection[] = ["hangap", "floorpeak", "rrm"];
+
+export interface ReportSectionRef {
+  section: ReportSection;
+  label: string;
+  name: string;
+  saved_at?: string | null;
+}
+
+export interface ReportSlide {
+  section: ReportSection | "cover";
+  kind: string;
+  title: string;
+}
+
+export interface ReportJob {
+  job_id: string;
+  status: ReportStatus;
+  phase: ReportPhase;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  sections: ReportSectionRef[];
+}
+
+export interface ReportResult {
+  job_id: string;
+  filename: string;
+  /** サーバが返す相対パス。実際の URL は getReportDownloadUrl で組み立てる */
+  download_url: string;
+  generated_at: string | null;
+  slide_count: number;
+  sections: ReportSectionRef[];
+  slides: ReportSlide[];
+}
+
+/** 各モジュール 0 件または 1 件。3 つとも省略するとサーバが 400 を返す */
+export interface ReportGenerateBody {
+  hangap_result?: string;
+  floorpeak_result?: string;
+  rrm_result?: string;
+}
+
+export interface ReportStartResult {
+  job_id: string;
+  conflict: boolean;
+  message?: string;
+}
+
+async function reportDetail(res: Response): Promise<string | undefined> {
+  try {
+    const detail = (await res.json()).detail;
+    if (typeof detail === "string") return maskMessage(detail);
+    if (detail && typeof detail === "object") return maskedDetail(detail.message);
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+export async function startReportGeneration(
+  body: ReportGenerateBody
+): Promise<ReportStartResult> {
+  const res = await fetch(`${API_BASE}/api/report/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 409) {
+    let detail: { message?: string; job_id?: string } = {};
+    try { detail = (await res.json()).detail ?? {}; } catch { /* ignore */ }
+    return {
+      job_id: detail.job_id ?? "",
+      conflict: true,
+      message: maskMessage(detail.message ?? "別のレポート生成が実行中です。"),
+    };
+  }
+  if (!res.ok) throw new Error((await reportDetail(res)) ?? `Report generate error ${res.status}`);
+  return { job_id: (await res.json()).job_id, conflict: false };
+}
+
+/** ジョブの状態。破棄済み・TTL 切れ（404）は null を返す。 */
+export async function fetchReportJob(jobId: string): Promise<ReportJob | null> {
+  const res = await fetch(`${API_BASE}/api/report/jobs/${jobId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error((await reportDetail(res)) ?? `Report job error ${res.status}`);
+  return maskedJson(res);
+}
+
+export async function fetchReportResult(jobId: string): Promise<ReportResult> {
+  const res = await fetch(`${API_BASE}/api/report/jobs/${jobId}/result`);
+  if (!res.ok) throw new Error((await reportDetail(res)) ?? `Report result error ${res.status}`);
+  return maskedJson(res);
+}
+
+export async function deleteReportJob(jobId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/report/jobs/${jobId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error((await reportDetail(res)) ?? `Report delete error ${res.status}`);
+}
+
+export const getReportDownloadUrl = (jobId: string) =>
+  `${API_BASE}/api/report/jobs/${jobId}/download`;

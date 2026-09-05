@@ -9,3 +9,5 @@ tzdata
 # hangap（ログ分析）。コンテナ内で topology-report / analyze を実行するため runtime に含める
 pandas==3.0.5
 openpyxl==3.1.5
+# レポート出力（PPTX）。ネイティブグラフを描くため runtime に含める
+python-pptx==1.0.2

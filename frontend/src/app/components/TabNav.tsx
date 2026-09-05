@@ -1,6 +1,8 @@
 "use client";
 
-import { BarChart3, History as HistoryIcon, Map, RadioTower, Search, ZapOff } from "lucide-react";
+import {
+  BarChart3, FileText, History as HistoryIcon, Map, RadioTower, Search, ZapOff,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useMask } from "@/app/providers";
@@ -21,6 +23,7 @@ const ROUTE_TABS = [
   { href: "/hangap", label: "Hang AP", icon: <ZapOff className="w-3.5 h-3.5" /> },
   { href: "/floorpeak", label: "Floor Peak", icon: <BarChart3 className="w-3.5 h-3.5" /> },
   { href: "/rrm", label: "RRM", icon: <RadioTower className="w-3.5 h-3.5" /> },
+  { href: "/report", label: "Report", icon: <FileText className="w-3.5 h-3.5" /> },
 ] as const;
 
 const tabClass =
@@ -36,7 +39,7 @@ function tabStyle(active: boolean) {
 /**
  * 全ページ共通のタブ行。Site Overview / Floor Map はトップページ内の状態切替
  * （他ページからは "/" への遷移になる）、Insights / History / Hang AP / Floor Peak /
- * RRM は別ルートへの遷移。見た目は統一し、実装（button vs Link）だけを分ける。
+ * RRM / Report は別ルートへの遷移。見た目は統一し、実装（button vs Link）だけを分ける。
  */
 export default function TabNav({ homeTab, onHomeTabChange }: TabNavProps) {
   const pathname = usePathname();
